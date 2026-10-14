@@ -5,8 +5,10 @@ __pycache__/
 *.so
 
 # Uploaded raw videos / dynamic frames
-backend/uploads/videos/
+backend/uploads/videos/*
 backend/uploads/frames/frame_*.jpg
+backend/uploads/annotated/annotated_*.jpg
+backend/uploads/annotated/snapshot_*.jpg
 
 # Node / Expo
 frontend-app/roadmitra/node_modules/
