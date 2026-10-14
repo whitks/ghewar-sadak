@@ -114,7 +114,7 @@ export default function DashcamPipelineScreen() {
         setLatestCapturedUri(photo.uri);
 
         const currentGps = liveGpsRef.current;
-        const res = await uploadDashcamFrame(photo.uri, currentGps, 'phone_dashcam_live');
+        const res = await uploadDashcamFrame(photo.uri, currentGps, 'phone_dashcam_live', 'fast', 0.15);
 
         if (res?.detections) {
           setLatestDetections(res.detections);

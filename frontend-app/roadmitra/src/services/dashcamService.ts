@@ -380,6 +380,8 @@ export const dashcamService = {
             frame.imageUri,
             frame.gps,
             'wifi_dashcam_01',
+            'fast',
+            0.15,
           );
           if (res?.detections) {
             serverDetections = res.detections;

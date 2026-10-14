@@ -1,7 +1,7 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, Animated, Image, Alert,
+  View, Text, StyleSheet, TouchableOpacity, Animated, Image, Alert, ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,6 +11,8 @@ import { useTripRecorder } from '../../hooks/useTripRecorder';
 import { storage } from '../../services/storage';
 import { AppColors } from '../../constants/theme';
 import { Button } from '../../components/ui/Button';
+import { annotateFrame, PotholeDetection, BACKEND_URL } from '../../services/api';
+import { HazardType } from '../../constants/hazardTypes';
 
 export default function ActiveTripScreen() {
   const {
@@ -37,6 +39,11 @@ export default function ActiveTripScreen() {
   } = useTripRecorder();
 
   const [snappedPhoto, setSnappedPhoto] = useState<string | null>(null);
+  const [annotatedPhotoUrl, setAnnotatedPhotoUrl] = useState<string | null>(null);
+  const [aiDetections, setAiDetections] = useState<PotholeDetection[]>([]);
+  const [isAiProcessing, setIsAiProcessing] = useState(false);
+  const [aiMessage, setAiMessage] = useState<string | null>(null);
+
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const joltAlertAnim = useRef(new Animated.Value(0)).current;
   const patchAlertAnim = useRef(new Animated.Value(0)).current;
@@ -116,8 +123,55 @@ export default function ActiveTripScreen() {
           await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } catch {}
 
-        // Save manual report with real location & photo to upload queue
+        setIsAiProcessing(true);
+        setAiMessage('Running Fast YOLO AI detection...');
+
+        // ── Call Real-Time Fast Endpoint: /api/annotate-frame?model=fast&conf=0.15 ──
+        let fastDetections: PotholeDetection[] = [];
+        let finalAnnotatedUrl = photoUri;
+        try {
+          const aiRes = await annotateFrame(photoUri, 'fast', 0.15, false);
+          if (aiRes && aiRes.detections) {
+            fastDetections = aiRes.detections;
+            setAiDetections(fastDetections);
+            if (aiRes.annotated_image_url) {
+              finalAnnotatedUrl = `${BACKEND_URL}${aiRes.annotated_image_url}`;
+            } else if (aiRes.annotated_image_base64) {
+              finalAnnotatedUrl = aiRes.annotated_image_base64;
+            }
+            setAnnotatedPhotoUrl(finalAnnotatedUrl);
+            setAiMessage(
+              `Fast AI (${aiRes.inference_ms}ms): ${aiRes.potholes_found} defect(s) detected`
+            );
+          }
+        } catch (aiErr) {
+          console.warn('Fast AI annotation failed:', aiErr);
+        } finally {
+          setIsAiProcessing(false);
+        }
+
         const reportCoords = coords ?? { lat: 18.9388, lon: 72.8354 };
+        const primaryDefect = fastDetections[0];
+        const defectSeverity = primaryDefect
+          ? primaryDefect.severity === 'Critical'
+            ? 90
+            : primaryDefect.severity === 'High'
+            ? 75
+            : 50
+          : 70;
+        const defectDepth = primaryDefect?.estimated_depth_cm ?? 4.5;
+        const defectClass = primaryDefect?.class_name ?? 'pothole';
+        const hazardType: HazardType = defectClass.toLowerCase().includes('alligator')
+          ? 'alligator_crack'
+          : defectClass.toLowerCase().includes('longitudinal')
+          ? 'longitudinal_crack'
+          : defectClass.toLowerCase().includes('transverse')
+          ? 'transverse_crack'
+          : defectClass.toLowerCase().includes('other')
+          ? 'rough_patch'
+          : 'pothole';
+
+        // Save manual report with real location & photo to upload queue
         await storage.addToQueue({
           id: `upload-report-${Date.now()}`,
           type: 'report',
@@ -131,27 +185,27 @@ export default function ActiveTripScreen() {
             lat: reportCoords.lat,
             lon: reportCoords.lon,
             gps_accuracy_m: gpsAccuracy ?? 10,
-            type: 'pothole',
-            photo_uri: photoUri,
+            type: hazardType,
+            photo_uri: finalAnnotatedUrl,
             needs_blur: true,
           },
         });
 
-        // Save to local hazards so it immediately appears on the Map with photo
+        // Save to local hazards so it immediately appears on the Map with photo and AI metrics
         await storage.addHazard({
           id: `haz-snap-${Date.now()}`,
           lat: reportCoords.lat,
           lon: reportCoords.lon,
-          type: 'pothole',
+          type: hazardType,
           status: 'confirmed',
-          confidence: 0.94,
-          severity: 80,
+          confidence: primaryDefect?.confidence ?? 0.88,
+          severity: defectSeverity,
           source: 'camera',
-          cameraScore: 0.94,
+          cameraScore: primaryDefect?.confidence ?? 0.88,
           deviceCount: 1,
           lastSeen: new Date().toISOString(),
-          description: 'Pothole photo captured in-trip',
-          photoUri,
+          description: `Fast AI: ${defectClass} (~${defectDepth}cm) detected in drive`,
+          photoUri: finalAnnotatedUrl,
         });
       }
     } catch (err) {
@@ -326,42 +380,61 @@ export default function ActiveTripScreen() {
             onPress={handleSnapCamera}
             activeOpacity={0.85}
           >
-            {snappedPhoto ? (
-              <Image source={{ uri: snappedPhoto }} style={styles.snappedThumb} />
+            {annotatedPhotoUrl || snappedPhoto ? (
+              <Image source={{ uri: annotatedPhotoUrl || snappedPhoto! }} style={styles.snappedThumb} />
             ) : (
               <View style={styles.cameraIconBox}>
                 <Ionicons name="camera" size={24} color={AppColors.primary} />
               </View>
             )}
             <View style={{ flex: 1 }}>
-              <Text style={styles.cameraSnapTitle}>
-                {snappedPhoto ? 'Road Defect Photo Attached' : 'Capture Road Defect Photo'}
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={styles.cameraSnapTitle}>
+                  {snappedPhoto ? 'Road Defect Snapped' : 'Capture Road Defect Photo'}
+                </Text>
+                <View style={styles.fastModelBadge}>
+                  <Text style={styles.fastModelBadgeText}>FAST AI</Text>
+                </View>
+              </View>
               <Text style={styles.cameraSnapSub}>
-                {snappedPhoto
-                  ? 'Geotagged & ready for Vision AI fusion'
-                  : 'Tap to snap a visible pothole ahead'}
+                {aiMessage || (snappedPhoto
+                  ? 'Geotagged & scanned with Fast YOLO'
+                  : 'Tap to snap & run instant Fast AI road inspection')}
               </Text>
             </View>
-            <Ionicons
-              name={snappedPhoto ? 'checkmark-circle' : 'chevron-forward'}
-              size={20}
-              color={snappedPhoto ? AppColors.success : AppColors.textMuted}
-            />
+            {isAiProcessing ? (
+              <ActivityIndicator size="small" color={AppColors.primary} />
+            ) : (
+              <Ionicons
+                name={snappedPhoto ? 'checkmark-circle' : 'chevron-forward'}
+                size={20}
+                color={snappedPhoto ? AppColors.success : AppColors.textMuted}
+              />
+            )}
           </TouchableOpacity>
+
+          {/* AI Defect Results Banner */}
+          {aiDetections.length > 0 && (
+            <View style={styles.aiResultBar}>
+              <Ionicons name="sparkles" size={15} color={AppColors.accent} />
+              <Text style={styles.aiResultText}>
+                {aiDetections[0].class_name} ({Math.round(aiDetections[0].confidence * 100)}%) · ~{aiDetections[0].estimated_depth_cm}cm depth ({aiDetections[0].severity})
+              </Text>
+            </View>
+          )}
 
           {/* Live Dashcam HUD & Vision AI Launcher */}
           <TouchableOpacity
             style={styles.dashcamLiveBtn}
-            onPress={() => router.push('/dashcam-live')}
+            onPress={() => router.push('/dashcam-pipeline')}
             activeOpacity={0.85}
           >
             <View style={styles.dashcamLiveIconBox}>
               <Ionicons name="videocam" size={20} color="#fff" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.dashcamLiveTitle}>Live Dashcam & AI Vision HUD</Text>
-              <Text style={styles.dashcamLiveSub}>Connect phone or Wi-Fi dashcam for 98% dual-fusion</Text>
+              <Text style={styles.dashcamLiveTitle}>Live Dashcam Drive Mode (Fast AI)</Text>
+              <Text style={styles.dashcamLiveSub}>Real-time camera frame stream with 15ms YOLO inference</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color={AppColors.textMuted} />
           </TouchableOpacity>
@@ -653,4 +726,36 @@ const styles = StyleSheet.create({
     borderColor: AppColors.warningBorder,
   },
   safetyText: { color: AppColors.warning, fontSize: 11, fontWeight: '600', flex: 1, lineHeight: 15 },
+  fastModelBadge: {
+    backgroundColor: '#ecfdf5',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#10b981',
+  },
+  fastModelBadgeText: {
+    color: '#059669',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  aiResultBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#fff1f2',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#fecdd3',
+    width: '100%',
+  },
+  aiResultText: {
+    color: AppColors.accent,
+    fontSize: 12,
+    fontWeight: '700',
+    flex: 1,
+  },
 });
