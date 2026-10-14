@@ -7,12 +7,13 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { Accelerometer } from 'expo-sensors';
-import { MOCK_HAZARDS } from '../../services/mockData';
+import { MOCK_HAZARDS, Hazard } from '../../services/mockData';
 import { HazardCard } from '../../components/HazardCard';
 import { useUploadQueue } from '../../hooks/useUploadQueue';
 import { useTripRecorder } from '../../hooks/useTripRecorder';
 import { AppColors } from '../../constants/theme';
 import { Button } from '../../components/ui/Button';
+import { dashcamService, DashcamPipelineState } from '../../services/dashcamService';
 
 export default function HomeScreen() {
   const { isRecording, startTrip, stopTrip, gpsAccuracy, speed } = useTripRecorder();
@@ -20,8 +21,10 @@ export default function HomeScreen() {
   const [gpsReady, setGpsReady] = useState(false);
   const [accelReady, setAccelReady] = useState(false);
   const [liveAccuracy, setLiveAccuracy] = useState<number | null>(null);
-
-  const recentHazards = MOCK_HAZARDS.slice(0, 3);
+  const [dashcamState, setDashcamState] = useState<DashcamPipelineState>(
+    dashcamService.getState(),
+  );
+  const [hazardsList, setHazardsList] = useState<Hazard[]>(MOCK_HAZARDS.slice(0, 4));
 
   // Check initial real sensor status
   useEffect(() => {
@@ -46,8 +49,15 @@ export default function HomeScreen() {
       }
     }
     checkSensors();
+    const unsub = dashcamService.subscribe((s) => {
+      if (mounted) {
+        setDashcamState(s);
+        setHazardsList([...MOCK_HAZARDS.slice(0, 4)]);
+      }
+    });
     return () => {
       mounted = false;
+      unsub();
     };
   }, []);
 
@@ -77,17 +87,25 @@ export default function HomeScreen() {
             </View>
             <Text style={styles.subtitle}>Road safety telemetry & defect detection</Text>
           </View>
-          <TouchableOpacity
-            style={styles.notifBtn}
-            onPress={() => router.push('/notifications')}
-          >
-            <Ionicons name="notifications-outline" size={20} color={AppColors.textPrimary} />
-            {pendingCount > 0 && (
-              <View style={styles.notifDot}>
-                <Text style={styles.notifCount}>{pendingCount}</Text>
-              </View>
-            )}
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity
+              style={styles.notifBtn}
+              onPress={() => router.push('/dashcam-pipeline')}
+            >
+              <Ionicons name="videocam-outline" size={20} color={AppColors.primary} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.notifBtn}
+              onPress={() => router.push('/notifications')}
+            >
+              <Ionicons name="notifications-outline" size={20} color={AppColors.textPrimary} />
+              {pendingCount > 0 && (
+                <View style={styles.notifDot}>
+                  <Text style={styles.notifCount}>{pendingCount}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Live Trip Status Card */}
@@ -161,6 +179,108 @@ export default function HomeScreen() {
           </TouchableOpacity>
         )}
 
+        {/* WiFi Dashcam 10s Extraction Card */}
+        <TouchableOpacity
+          style={styles.dashcamCard}
+          onPress={() => router.push('/dashcam-pipeline')}
+          activeOpacity={0.9}
+        >
+          <View style={styles.dashcamHeaderRow}>
+            <View style={styles.dashcamTitleBox}>
+              <View style={styles.dashcamIconCircle}>
+                <Ionicons name="videocam" size={18} color="#ffffff" />
+              </View>
+              <View>
+                <Text style={styles.dashcamTitle}>WiFi Dashcam AI Pipeline</Text>
+                <Text style={styles.dashcamSubtitle}>
+                  {dashcamState.wifiSSID} · Continuous Video & 10s Slicing
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.dashcamStatusBadge}>
+              <View
+                style={[
+                  styles.dashcamDot,
+                  {
+                    backgroundColor:
+                      dashcamState.stage === 'completed'
+                        ? AppColors.success
+                        : dashcamState.stage === 'idle'
+                        ? AppColors.info
+                        : AppColors.accent,
+                  },
+                ]}
+              />
+              <Text style={styles.dashcamStatusBadgeText}>
+                {dashcamState.stage === 'idle'
+                  ? 'READY'
+                  : dashcamState.stage === 'completed'
+                  ? 'SYNCED'
+                  : 'ACTIVE'}
+              </Text>
+            </View>
+          </View>
+
+          {/* Mini Flow Pipeline Stepper */}
+          <View style={styles.dashcamMiniFlow}>
+            <View style={styles.miniStep}>
+              <Ionicons name="videocam-outline" size={11} color={AppColors.textPrimary} />
+              <Text style={styles.miniStepText}>Dashcam</Text>
+            </View>
+            <Ionicons name="arrow-forward" size={9} color={AppColors.textMuted} />
+            <View style={styles.miniStep}>
+              <Ionicons name="film-outline" size={11} color={AppColors.textPrimary} />
+              <Text style={styles.miniStepText}>10s Slicing</Text>
+            </View>
+            <Ionicons name="arrow-forward" size={9} color={AppColors.textMuted} />
+            <View style={styles.miniStep}>
+              <Ionicons name="hardware-chip-outline" size={11} color={AppColors.textPrimary} />
+              <Text style={styles.miniStepText}>AI Detect</Text>
+            </View>
+            <Ionicons name="arrow-forward" size={9} color={AppColors.textMuted} />
+            <View style={styles.miniStep}>
+              <Ionicons name="analytics-outline" size={11} color={AppColors.textPrimary} />
+              <Text style={styles.miniStepText}>Dashboard</Text>
+            </View>
+          </View>
+
+          {/* Dynamic Summary */}
+          <Text style={styles.dashcamSummaryText}>
+            {dashcamState.stage === 'completed'
+              ? `✓ Sliced ${dashcamState.stats.totalFramesExtracted} keyframes (every 10s) · Found ${dashcamState.stats.totalPotholesFound} road defects (Peak ${dashcamState.stats.highestConfidence}% conf)`
+              : dashcamState.stage === 'recording'
+              ? `● Recording in progress (${dashcamState.elapsedRecordingSec}s / 30s) · Auto-extracting frames every 10s...`
+              : dashcamState.stage === 'detecting'
+              ? `⚡ AI Inference Engine analyzing keyframes on backend...`
+              : `Records road footage continuously & transmits only 10s keyframes to save 98% bandwidth.`}
+          </Text>
+
+          {/* Button CTA */}
+          <View style={styles.dashcamCtaRow}>
+            <View style={styles.dashcamCtaBtn}>
+              <Text style={styles.dashcamCtaText}>Open Live Pipeline</Text>
+              <Ionicons name="chevron-forward" size={13} color="#ffffff" />
+            </View>
+            <TouchableOpacity
+              style={styles.dashcamSimBtn}
+              onPress={(e) => {
+                e.stopPropagation();
+                router.push('/dashcam-pipeline');
+                setTimeout(() => {
+                  dashcamService.runPipelineSimulation({
+                    recordingDurationSec: 30,
+                    speedMultiplier: 5,
+                  });
+                }, 300);
+              }}
+            >
+              <Ionicons name="flash" size={12} color={AppColors.primary} />
+              <Text style={styles.dashcamSimText}>Simulate Now</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+
         {/* Quick Calibration / Camera Tip */}
         <TouchableOpacity
           style={styles.calibCard}
@@ -186,7 +306,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
-        {recentHazards.map((h) => (
+        {hazardsList.map((h) => (
           <HazardCard
             key={h.id}
             hazard={h}
@@ -342,4 +462,127 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   viewAllText: { color: AppColors.primary, fontSize: 14, fontWeight: '700' },
+  dashcamCard: {
+    backgroundColor: AppColors.surface,
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1.5,
+    borderColor: AppColors.border,
+    shadowColor: AppColors.shadow,
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 2,
+    gap: 12,
+  },
+  dashcamHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  dashcamTitleBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  dashcamIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: AppColors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dashcamTitle: {
+    color: AppColors.textPrimary,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  dashcamSubtitle: {
+    color: AppColors.textSecondary,
+    fontSize: 11,
+    marginTop: 1,
+  },
+  dashcamStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: AppColors.cardAlt,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    gap: 5,
+  },
+  dashcamDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  dashcamStatusBadgeText: {
+    color: AppColors.textPrimary,
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  dashcamMiniFlow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: AppColors.cardAlt,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  miniStep: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  miniStepText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: AppColors.textPrimary,
+  },
+  dashcamSummaryText: {
+    fontSize: 12,
+    color: AppColors.textSecondary,
+    lineHeight: 16,
+    fontWeight: '600',
+  },
+  dashcamCtaRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  dashcamCtaBtn: {
+    flex: 2,
+    backgroundColor: AppColors.primary,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  dashcamCtaText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  dashcamSimBtn: {
+    flex: 1,
+    backgroundColor: AppColors.cardAlt,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  dashcamSimText: {
+    color: AppColors.primary,
+    fontSize: 11,
+    fontWeight: '700',
+  },
 });
