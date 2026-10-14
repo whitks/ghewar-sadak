@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Uploaded raw videos / dynamic frames
+backend/uploads/videos/
+backend/uploads/frames/frame_*.jpg
+
+# Node / Expo
+frontend-app/roadmitra/node_modules/
+frontend-app/roadmitra/.expo/
+frontend-app/roadmitra/dist/
+frontend-app/roadmitra/web-build/
+
+# OS
+.DS_Store
+Thumbs.db
