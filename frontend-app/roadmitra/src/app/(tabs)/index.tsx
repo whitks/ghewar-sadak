@@ -1,7 +1,7 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
+  View, Text, StyleSheet, TouchableOpacity, ScrollView, Modal, TextInput, ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,6 +14,12 @@ import { useTripRecorder } from '../../hooks/useTripRecorder';
 import { AppColors } from '../../constants/theme';
 import { Button } from '../../components/ui/Button';
 import { dashcamService, DashcamPipelineState } from '../../services/dashcamService';
+import {
+  webcamStreamService,
+  WebcamServiceState,
+  CameraSourceMode,
+  POPULAR_DASHCAM_PRESETS,
+} from '../../services/webcamStreamService';
 
 export default function HomeScreen() {
   const { isRecording, startTrip, stopTrip, gpsAccuracy, speed } = useTripRecorder();
@@ -24,6 +30,13 @@ export default function HomeScreen() {
   const [dashcamState, setDashcamState] = useState<DashcamPipelineState>(
     dashcamService.getState(),
   );
+  const [cameraState, setCameraState] = useState<WebcamServiceState>(
+    webcamStreamService.getState(),
+  );
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [customIp, setCustomIp] = useState(cameraState.cameraIP);
+  const [isTestingConn, setIsTestingConn] = useState(false);
+  const [connFeedback, setConnFeedback] = useState<string | null>(null);
   const [hazardsList, setHazardsList] = useState<Hazard[]>(MOCK_HAZARDS.slice(0, 4));
 
   // Check initial real sensor status
@@ -55,9 +68,15 @@ export default function HomeScreen() {
         setHazardsList([...MOCK_HAZARDS.slice(0, 4)]);
       }
     });
+    const unsubWebcam = webcamStreamService.subscribe((s) => {
+      if (mounted) {
+        setCameraState(s);
+      }
+    });
     return () => {
       mounted = false;
       unsub();
+      unsubWebcam();
     };
   }, []);
 
@@ -90,7 +109,7 @@ export default function HomeScreen() {
           <View style={{ flexDirection: 'row', gap: 8 }}>
             <TouchableOpacity
               style={styles.notifBtn}
-              onPress={() => router.push('/dashcam-pipeline')}
+              onPress={() => router.push('/dashcam-live')}
             >
               <Ionicons name="videocam-outline" size={20} color={AppColors.primary} />
             </TouchableOpacity>
@@ -179,107 +198,268 @@ export default function HomeScreen() {
           </TouchableOpacity>
         )}
 
-        {/* WiFi Dashcam 10s Extraction Card */}
-        <TouchableOpacity
-          style={styles.dashcamCard}
-          onPress={() => router.push('/dashcam-pipeline')}
-          activeOpacity={0.9}
-        >
+        {/* Camera & WiFi Dashcam AI Vision Card */}
+        <View style={styles.dashcamCard}>
           <View style={styles.dashcamHeaderRow}>
             <View style={styles.dashcamTitleBox}>
               <View style={styles.dashcamIconCircle}>
                 <Ionicons name="videocam" size={18} color="#ffffff" />
               </View>
-              <View>
-                <Text style={styles.dashcamTitle}>WiFi Dashcam AI Pipeline</Text>
-                <Text style={styles.dashcamSubtitle}>
-                  {dashcamState.wifiSSID} · Continuous Video & 10s Slicing
+              <View style={{ flex: 1 }}>
+                <Text style={styles.dashcamTitle}>Camera & Dashcam Vision</Text>
+                <Text style={styles.dashcamSubtitle} numberOfLines={1}>
+                  {cameraState.sourceMode === 'phone_camera'
+                    ? '📱 Phone Windshield Camera'
+                    : cameraState.sourceMode === 'wifi_dashcam'
+                    ? `📷 Wi-Fi Dashcam (${cameraState.cameraIP})`
+                    : cameraState.sourceMode === 'ip_stream'
+                    ? '🌐 External IP Stream'
+                    : '🧪 Road Video Simulation'}
                 </Text>
               </View>
             </View>
 
-            <View style={styles.dashcamStatusBadge}>
+            <TouchableOpacity
+              style={styles.connectCameraBadge}
+              onPress={() => setShowConnectModal(true)}
+            >
+              <Ionicons name="settings-outline" size={12} color={AppColors.primary} />
+              <Text style={styles.connectCameraBadgeText}>Change</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Connection Status Indicator */}
+          <View style={styles.cameraStatusBar}>
+            <View style={styles.cameraStatusInfo}>
               <View
                 style={[
-                  styles.dashcamDot,
-                  {
-                    backgroundColor:
-                      dashcamState.stage === 'completed'
-                        ? AppColors.success
-                        : dashcamState.stage === 'idle'
-                        ? AppColors.info
-                        : AppColors.accent,
-                  },
+                  styles.statusPillDot,
+                  { backgroundColor: cameraState.isConnected ? AppColors.success : AppColors.warning },
                 ]}
               />
-              <Text style={styles.dashcamStatusBadgeText}>
-                {dashcamState.stage === 'idle'
-                  ? 'READY'
-                  : dashcamState.stage === 'completed'
-                  ? 'SYNCED'
-                  : 'ACTIVE'}
+              <Text style={styles.cameraStatusInfoText}>
+                {cameraState.isConnected ? 'Connected & Ready' : 'Awaiting Connection'}
               </Text>
             </View>
+            <Text style={styles.cameraStatusSub}>
+              {cameraState.sourceMode === 'phone_camera'
+                ? 'Mount phone on dash'
+                : cameraState.sourceMode === 'wifi_dashcam'
+                ? cameraState.activePresetId.toUpperCase()
+                : 'Custom feed'}
+            </Text>
           </View>
 
           {/* Mini Flow Pipeline Stepper */}
           <View style={styles.dashcamMiniFlow}>
             <View style={styles.miniStep}>
               <Ionicons name="videocam-outline" size={11} color={AppColors.textPrimary} />
-              <Text style={styles.miniStepText}>Dashcam</Text>
-            </View>
-            <Ionicons name="arrow-forward" size={9} color={AppColors.textMuted} />
-            <View style={styles.miniStep}>
-              <Ionicons name="film-outline" size={11} color={AppColors.textPrimary} />
-              <Text style={styles.miniStepText}>10s Slicing</Text>
+              <Text style={styles.miniStepText}>Camera</Text>
             </View>
             <Ionicons name="arrow-forward" size={9} color={AppColors.textMuted} />
             <View style={styles.miniStep}>
               <Ionicons name="hardware-chip-outline" size={11} color={AppColors.textPrimary} />
-              <Text style={styles.miniStepText}>AI Detect</Text>
+              <Text style={styles.miniStepText}>YOLO AI</Text>
             </View>
             <Ionicons name="arrow-forward" size={9} color={AppColors.textMuted} />
             <View style={styles.miniStep}>
-              <Ionicons name="analytics-outline" size={11} color={AppColors.textPrimary} />
-              <Text style={styles.miniStepText}>Dashboard</Text>
+              <Ionicons name="pulse-outline" size={11} color={AppColors.textPrimary} />
+              <Text style={styles.miniStepText}>IMU Fusion</Text>
+            </View>
+            <Ionicons name="arrow-forward" size={9} color={AppColors.textMuted} />
+            <View style={styles.miniStep}>
+              <Ionicons name="shield-checkmark-outline" size={11} color={AppColors.textPrimary} />
+              <Text style={styles.miniStepText}>98% Conf</Text>
             </View>
           </View>
 
           {/* Dynamic Summary */}
           <Text style={styles.dashcamSummaryText}>
-            {dashcamState.stage === 'completed'
-              ? `✓ Sliced ${dashcamState.stats.totalFramesExtracted} keyframes (every 10s) · Found ${dashcamState.stats.totalPotholesFound} road defects (Peak ${dashcamState.stats.highestConfidence}% conf)`
-              : dashcamState.stage === 'recording'
-              ? `● Recording in progress (${dashcamState.elapsedRecordingSec}s / 30s) · Auto-extracting frames every 10s...`
-              : dashcamState.stage === 'detecting'
-              ? `⚡ AI Inference Engine analyzing keyframes on backend...`
-              : `Records road footage continuously & transmits only 10s keyframes to save 98% bandwidth.`}
+            Combines live road video detection with 50Hz vehicle vibration telemetry for dual-confirmed pothole & patch tracking.
           </Text>
 
-          {/* Button CTA */}
+          {/* Dual Action CTAs: Connect Camera & Live HUD */}
           <View style={styles.dashcamCtaRow}>
-            <View style={styles.dashcamCtaBtn}>
-              <Text style={styles.dashcamCtaText}>Open Live Pipeline</Text>
-              <Ionicons name="chevron-forward" size={13} color="#ffffff" />
-            </View>
             <TouchableOpacity
-              style={styles.dashcamSimBtn}
-              onPress={(e) => {
-                e.stopPropagation();
-                router.push('/dashcam-pipeline');
-                setTimeout(() => {
-                  dashcamService.runPipelineSimulation({
-                    recordingDurationSec: 30,
-                    speedMultiplier: 5,
-                  });
-                }, 300);
-              }}
+              style={styles.connectCamBtn}
+              onPress={() => setShowConnectModal(true)}
+              activeOpacity={0.85}
             >
-              <Ionicons name="flash" size={12} color={AppColors.primary} />
-              <Text style={styles.dashcamSimText}>Simulate Now</Text>
+              <Ionicons name="link" size={14} color={AppColors.primary} />
+              <Text style={styles.connectCamBtnText}>Connect Camera</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.dashcamCtaBtn}
+              onPress={() => router.push('/dashcam-live')}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="eye-outline" size={14} color="#ffffff" />
+              <Text style={styles.dashcamCtaText}>Open Live HUD</Text>
+              <Ionicons name="chevron-forward" size={13} color="#ffffff" />
             </TouchableOpacity>
           </View>
-        </TouchableOpacity>
+        </View>
+
+        {/* Connect Camera Modal */}
+        <Modal
+          visible={showConnectModal}
+          transparent
+          animationType="slide"
+          onRequestClose={() => setShowConnectModal(false)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <View>
+                  <Text style={styles.modalTitle}>Connect Road Camera</Text>
+                  <Text style={styles.modalSub}>Select where our YOLO model receives road video from</Text>
+                </View>
+                <TouchableOpacity onPress={() => setShowConnectModal(false)}>
+                  <Ionicons name="close-circle" size={26} color={AppColors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
+                {/* Option 1: Phone Windshield Camera */}
+                <TouchableOpacity
+                  style={[
+                    styles.modalOption,
+                    cameraState.sourceMode === 'phone_camera' && styles.modalOptionActive,
+                  ]}
+                  onPress={() => {
+                    webcamStreamService.setSourceMode('phone_camera');
+                  }}
+                >
+                  <View style={styles.modalOptionIconBox}>
+                    <Ionicons name="phone-portrait-outline" size={22} color={AppColors.primary} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.modalOptionTitle}>Phone Windshield Camera</Text>
+                    <Text style={styles.modalOptionSub}>
+                      Use this phone mounted on dashboard or AC vent. Zero extra hardware needed.
+                    </Text>
+                  </View>
+                  {cameraState.sourceMode === 'phone_camera' && (
+                    <Ionicons name="checkmark-circle" size={22} color={AppColors.primary} />
+                  )}
+                </TouchableOpacity>
+
+                {/* Option 2: Wi-Fi Car Dashcam */}
+                <TouchableOpacity
+                  style={[
+                    styles.modalOption,
+                    cameraState.sourceMode === 'wifi_dashcam' && styles.modalOptionActive,
+                  ]}
+                  onPress={() => {
+                    webcamStreamService.setSourceMode('wifi_dashcam');
+                  }}
+                >
+                  <View style={styles.modalOptionIconBox}>
+                    <Ionicons name="videocam-outline" size={22} color="#06b6d4" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.modalOptionTitle}>Car Wi-Fi Dashcam</Text>
+                    <Text style={styles.modalOptionSub}>
+                      Connect to 70mai, Viofo, DDPAI, or generic Wi-Fi dashcam.
+                    </Text>
+                  </View>
+                  {cameraState.sourceMode === 'wifi_dashcam' && (
+                    <Ionicons name="checkmark-circle" size={22} color={AppColors.primary} />
+                  )}
+                </TouchableOpacity>
+
+                {cameraState.sourceMode === 'wifi_dashcam' && (
+                  <View style={styles.dashcamModelBox}>
+                    <Text style={styles.modelBoxLabel}>Select Dashcam Model:</Text>
+                    {POPULAR_DASHCAM_PRESETS.map((p) => (
+                      <TouchableOpacity
+                        key={p.id}
+                        style={[
+                          styles.presetRow,
+                          cameraState.activePresetId === p.id && styles.presetRowActive,
+                        ]}
+                        onPress={() => {
+                          webcamStreamService.selectPreset(p.id);
+                          setCustomIp(p.defaultIP);
+                        }}
+                      >
+                        <Text style={styles.presetNameText}>{p.name}</Text>
+                        <Text style={styles.presetIpText}>{p.defaultIP}</Text>
+                      </TouchableOpacity>
+                    ))}
+
+                    <View style={styles.ipTestGroup}>
+                      <TextInput
+                        style={styles.ipTextInput}
+                        value={customIp}
+                        onChangeText={setCustomIp}
+                        placeholder="192.168.1.1"
+                      />
+                      <TouchableOpacity
+                        style={styles.testIpBtn}
+                        onPress={async () => {
+                          setIsTestingConn(true);
+                          setConnFeedback(null);
+                          const res = await webcamStreamService.testConnection(customIp);
+                          setIsTestingConn(false);
+                          setConnFeedback(res.message);
+                        }}
+                        disabled={isTestingConn}
+                      >
+                        {isTestingConn ? (
+                          <ActivityIndicator size="small" color="#fff" />
+                        ) : (
+                          <Text style={styles.testIpBtnText}>Test IP</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                    {connFeedback && (
+                      <Text style={styles.connFeedbackText}>{connFeedback}</Text>
+                    )}
+                  </View>
+                )}
+
+                {/* Option 3: Simulation */}
+                <TouchableOpacity
+                  style={[
+                    styles.modalOption,
+                    cameraState.sourceMode === 'simulation' && styles.modalOptionActive,
+                  ]}
+                  onPress={() => {
+                    webcamStreamService.setSourceMode('simulation');
+                  }}
+                >
+                  <View style={styles.modalOptionIconBox}>
+                    <Ionicons name="flask-outline" size={22} color="#d97706" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.modalOptionTitle}>Indoor Simulation Stream</Text>
+                    <Text style={styles.modalOptionSub}>
+                      Cycles recorded road footage for testing YOLO AI & fusion indoors.
+                    </Text>
+                  </View>
+                  {cameraState.sourceMode === 'simulation' && (
+                    <Ionicons name="checkmark-circle" size={22} color={AppColors.primary} />
+                  )}
+                </TouchableOpacity>
+              </ScrollView>
+
+              <View style={styles.modalFooter}>
+                <Button
+                  title="Open Live HUD & Viewfinder"
+                  size="lg"
+                  fullWidth
+                  icon="videocam"
+                  onPress={() => {
+                    setShowConnectModal(false);
+                    router.push('/dashcam-live');
+                  }}
+                />
+              </View>
+            </View>
+          </View>
+        </Modal>
 
         {/* Quick Calibration / Camera Tip */}
         <TouchableOpacity
@@ -584,5 +764,225 @@ const styles = StyleSheet.create({
     color: AppColors.primary,
     fontSize: 11,
     fontWeight: '700',
+  },
+
+  // Connect Camera button (inline badge)
+  connectCameraBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: AppColors.cardAlt,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  connectCameraBadgeText: {
+    color: AppColors.primary,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+
+  // Camera status bar inside dashcam card
+  cameraStatusBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: AppColors.cardAlt,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  cameraStatusInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  statusPillDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+  cameraStatusInfoText: {
+    color: AppColors.textPrimary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  cameraStatusSub: {
+    color: AppColors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+
+  // Connect Camera main CTA button
+  connectCamBtn: {
+    flex: 1,
+    backgroundColor: AppColors.cardAlt,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1.5,
+    borderColor: AppColors.primary,
+  },
+  connectCamBtnText: {
+    color: AppColors.primary,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+
+  // Modal styles
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'flex-end',
+  },
+  modalCard: {
+    backgroundColor: AppColors.surface,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 22,
+    paddingBottom: 36,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: -4 },
+    elevation: 20,
+    gap: 14,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  modalTitle: {
+    color: AppColors.textPrimary,
+    fontSize: 20,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+  },
+  modalSub: {
+    color: AppColors.textSecondary,
+    fontSize: 13,
+    marginTop: 3,
+    lineHeight: 17,
+  },
+  modalOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    padding: 14,
+    borderRadius: 16,
+    backgroundColor: AppColors.cardAlt,
+    borderWidth: 1.5,
+    borderColor: AppColors.border,
+    marginBottom: 10,
+  },
+  modalOptionActive: {
+    borderColor: AppColors.primary,
+    backgroundColor: `${AppColors.primary}12`,
+  },
+  modalOptionIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: AppColors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  modalOptionTitle: {
+    color: AppColors.textPrimary,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  modalOptionSub: {
+    color: AppColors.textSecondary,
+    fontSize: 12,
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  dashcamModelBox: {
+    backgroundColor: AppColors.cardAlt,
+    borderRadius: 14,
+    padding: 14,
+    gap: 8,
+    marginBottom: 10,
+  },
+  modelBoxLabel: {
+    color: AppColors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  presetRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: AppColors.surface,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  presetRowActive: {
+    borderColor: AppColors.primary,
+    backgroundColor: `${AppColors.primary}10`,
+  },
+  presetNameText: {
+    color: AppColors.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  presetIpText: {
+    color: AppColors.textSecondary,
+    fontSize: 12,
+    fontFamily: 'monospace',
+  },
+  ipTestGroup: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 4,
+  },
+  ipTextInput: {
+    flex: 1,
+    backgroundColor: AppColors.surface,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+    color: AppColors.textPrimary,
+    fontSize: 13,
+    fontFamily: 'monospace',
+  },
+  testIpBtn: {
+    backgroundColor: AppColors.primary,
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 72,
+  },
+  testIpBtnText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  connFeedbackText: {
+    color: AppColors.textSecondary,
+    fontSize: 12,
+    fontStyle: 'italic',
+    marginTop: 4,
+  },
+  modalFooter: {
+    marginTop: 6,
   },
 });

@@ -2,6 +2,65 @@ import { uploadDashcamFrame, GpsCoordinates, PotholeDetection, BACKEND_URL } fro
 import { Hazard, MOCK_HAZARDS } from './mockData';
 import { storage } from './storage';
 
+// ---------------------------------------------------------------------------
+// Dashcam detection helpers
+// ---------------------------------------------------------------------------
+
+/** Haversine distance between two GPS points in metres. */
+function gpsDistanceM(
+  lat1: number, lon1: number,
+  lat2: number, lon2: number,
+): number {
+  const R = 6_371_000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * Map YOLO class name to Hazard type.
+ * Covers all 5 classes the model produces.
+ */
+function hazardTypeForClass(className: string): Hazard['type'] {
+  const c = className.toLowerCase();
+  if (c.includes('alligator') || c.includes('fatigue')) return 'alligator_crack';
+  if (c.includes('longitudinal')) return 'longitudinal_crack';
+  if (c.includes('transverse')) return 'transverse_crack';
+  if (c.includes('pothole')) return 'pothole';
+  return 'rough_patch'; // 'Other' / patches / generic distress
+}
+
+/**
+ * Composite severity score (0–100) that weights both visual confidence
+ * and estimated depth, with a non-linear depth component so deep potholes
+ * score dramatically higher than surface cracks.
+ *
+ *   score = 0.55 * depth_component + 0.35 * conf_component + 0.10 * class_bonus
+ *   depth_component: logistic curve, saturates at ~10 cm
+ *   conf_component:  0–100 from raw model confidence
+ *   class_bonus:     +10 for potholes (structural risk vs surface cracks)
+ */
+function compositeSeverityScore(detection: PotholeDetection): number {
+  const depthCm = detection.estimated_depth_cm;
+  const conf = detection.confidence;          // 0..1
+  const isPothole = detection.class_name.toLowerCase().includes('pothole');
+
+  // Logistic depth component: 50% at 3 cm, 90% at 7 cm, saturates near 10 cm
+  const depthComp = 100 / (1 + Math.exp(-0.7 * (depthCm - 4)));
+  const confComp = conf * 100;
+  const classBonus = isPothole ? 10 : 0;
+
+  return Math.min(100, Math.round(0.55 * depthComp + 0.35 * confComp + 0.10 * classBonus));
+}
+
+/** Minimum distance (m) between two accepted detections to be logged as distinct events. */
+const CAMERA_DEDUP_RADIUS_M = 15;
+
 export type PipelineStage = 'idle' | 'recording' | 'extracting' | 'detecting' | 'completed' | 'error';
 
 export interface ExtractedFrame {
@@ -344,15 +403,31 @@ export const dashcamService = {
             if (d.estimated_depth_cm > maxDepth) maxDepth = d.estimated_depth_cm;
             if (d.severity === 'Critical') criticalCount++;
 
-            // Create Hazard object to sync into Dashboard & Map
+            // ── Cross-frame GPS deduplication ──────────────────────────────
+            // If a previously discovered hazard is within CAMERA_DEDUP_RADIUS_M
+            // of this detection, skip — it’s the same physical defect seen again.
+            const alreadyLogged = newlyDiscoveredHazards.some((existing) =>
+              gpsDistanceM(existing.lat, existing.lon, frame.gps.latitude, frame.gps.longitude) <
+              CAMERA_DEDUP_RADIUS_M,
+            );
+            if (alreadyLogged) {
+              addLog(
+                'AI Engine',
+                `Frame #${i + 1}: Duplicate detection suppressed (same location as existing hazard within ${CAMERA_DEDUP_RADIUS_M}m).`,
+                'info',
+              );
+              return; // skip this detection
+            }
+
+            // ── Build Hazard with improved type & severity ────────────────────
             const newHazard: Hazard = {
               id: `dashcam-${Date.now()}-${d.id}`,
               lat: frame.gps.latitude,
               lon: frame.gps.longitude,
-              type: d.class_name.toLowerCase().includes('crack') ? 'alligator_crack' : 'pothole',
+              type: hazardTypeForClass(d.class_name),
               status: 'confirmed',
               confidence: d.confidence,
-              severity: Math.min(100, Math.round(d.estimated_depth_cm * 12 + d.confidence * 20)),
+              severity: compositeSeverityScore(d),
               source: 'camera',
               cameraScore: d.confidence,
               phoneScore: undefined,
