@@ -1,12 +1,13 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
+  View, Text, StyleSheet, TouchableOpacity, ScrollView, Image,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { MOCK_HAZARDS, Hazard } from '../../services/mockData';
+import { storage } from '../../services/storage';
 import { HAZARD_LABELS, HAZARD_VECTOR_ICONS } from '../../constants/hazardTypes';
 import { AppColors } from '../../constants/theme';
 import { Button } from '../../components/ui/Button';
@@ -21,10 +22,32 @@ type FilterType = 'all' | 'camera' | 'phone' | 'both';
 
 export default function MapScreen() {
   const [filter, setFilter] = useState<FilterType>('all');
-  const [hazards] = useState<Hazard[]>(MOCK_HAZARDS);
+  const [hazards, setHazards] = useState<Hazard[]>(MOCK_HAZARDS);
   const [selectedHazard, setSelectedHazard] = useState<Hazard | null>(null);
   const [userLocation, setUserLocation] = useState(DEFAULT_COORDS);
   const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
+
+  const loadHazards = useCallback(async () => {
+    try {
+      const storedHazards = await storage.getHazards();
+      if (storedHazards && storedHazards.length > 0) {
+        // Real hazards take priority at the top of the radar
+        const storedIds = new Set(storedHazards.map((h) => h.id));
+        const remainingMock = MOCK_HAZARDS.filter((h) => !storedIds.has(h.id));
+        setHazards([...storedHazards, ...remainingMock]);
+      } else {
+        setHazards(MOCK_HAZARDS);
+      }
+    } catch (err) {
+      console.warn('Failed loading stored hazards:', err);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadHazards();
+    }, [loadHazards])
+  );
 
   useEffect(() => {
     async function getUserLocation() {
@@ -200,6 +223,24 @@ export default function MapScreen() {
                   </Text>
                 )}
 
+                {selectedHazard.magnitude && (
+                  <View style={styles.calloutShock}>
+                    <Ionicons name="flash" size={15} color={AppColors.accent} />
+                    <Text style={styles.calloutShockText}>
+                      {selectedHazard.magnitude}G Road Shock Recorded
+                      {selectedHazard.speedKmh ? ` at ${Math.round(selectedHazard.speedKmh)} km/h` : ''}
+                    </Text>
+                  </View>
+                )}
+
+                {selectedHazard.photoUri && (
+                  <Image
+                    source={{ uri: selectedHazard.photoUri }}
+                    style={styles.calloutPhoto}
+                    resizeMode="cover"
+                  />
+                )}
+
                 <Button
                   title="Inspect Confidence & Scores"
                   variant="primary"
@@ -227,19 +268,32 @@ export default function MapScreen() {
                   onPress={() => router.push(`/hazard/${h.id}`)}
                   activeOpacity={0.85}
                 >
-                  <View style={styles.calloutIconBox}>
-                    <MaterialCommunityIcons
-                      name={HAZARD_VECTOR_ICONS[h.type] || 'alert-circle'}
-                      size={22}
-                      color={AppColors.primary}
-                    />
-                  </View>
+                  {h.photoUri ? (
+                    <Image source={{ uri: h.photoUri }} style={styles.listThumb} />
+                  ) : (
+                    <View style={styles.calloutIconBox}>
+                      <MaterialCommunityIcons
+                        name={HAZARD_VECTOR_ICONS[h.type] || 'alert-circle'}
+                        size={22}
+                        color={AppColors.primary}
+                      />
+                    </View>
+                  )}
                   <View style={{ flex: 1, gap: 2 }}>
                     <Text style={styles.calloutTitle}>{HAZARD_LABELS[h.type]}</Text>
                     <Text style={styles.calloutSub}>
-                      {h.source === 'both' ? 'Vision AI + Phone IMU' : h.source === 'camera' ? 'Vision AI' : 'Phone Accelerometer'}
-                      {' · '}{h.deviceCount} devices
+                      {h.source === 'both'
+                        ? 'Vision AI + Phone IMU'
+                        : h.source === 'camera'
+                        ? 'Vision AI Photo'
+                        : 'Phone Accelerometer'}
+                      {' · '}{h.deviceCount} device{h.deviceCount !== 1 ? 's' : ''}
                     </Text>
+                    {h.magnitude && (
+                      <Text style={styles.shockListText}>
+                        ⚡ {h.magnitude}G shock {h.speedKmh ? `@ ${Math.round(h.speedKmh)} km/h` : ''}
+                      </Text>
+                    )}
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
                     <Text style={[styles.confidenceNum, { color: confidenceColor }]}>
@@ -402,4 +456,38 @@ const styles = StyleSheet.create({
   },
   confidenceNum: { fontSize: 16, fontWeight: '800' },
   confidenceLabel: { color: AppColors.textMuted, fontSize: 9, fontWeight: '700' },
+  calloutShock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFF1EE',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FFD4CC',
+  },
+  calloutShockText: {
+    color: AppColors.accent,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  calloutPhoto: {
+    width: '100%',
+    height: 120,
+    borderRadius: 12,
+  },
+  listThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  shockListText: {
+    color: AppColors.accent,
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 2,
+  },
 });

@@ -106,6 +106,23 @@ export default function ActiveTripScreen() {
             needs_blur: true,
           },
         });
+
+        // Save to local hazards so it immediately appears on the Map with photo
+        await storage.addHazard({
+          id: `haz-snap-${Date.now()}`,
+          lat: reportCoords.lat,
+          lon: reportCoords.lon,
+          type: 'pothole',
+          status: 'confirmed',
+          confidence: 0.94,
+          severity: 80,
+          source: 'camera',
+          cameraScore: 0.94,
+          deviceCount: 1,
+          lastSeen: new Date().toISOString(),
+          description: 'Pothole photo captured in-trip',
+          photoUri,
+        });
       }
     } catch (err) {
       console.warn('Camera snap failed:', err);

@@ -388,6 +388,24 @@ class TripRecorderService {
       },
     }).catch(() => {});
 
+    // Save as local Hazard so it immediately appears on the Map Radar
+    storage.addHazard({
+      id: `haz-shock-${jolt.id}`,
+      lat: jolt.lat,
+      lon: jolt.lon,
+      type: 'pothole',
+      status: 'unconfirmed',
+      confidence: Math.min(0.92, Number((magnitude / 2.6).toFixed(2))),
+      severity: Math.min(100, Math.round(magnitude * 36)),
+      source: 'phone',
+      phoneScore: Number((magnitude / 2.6).toFixed(2)),
+      deviceCount: 1,
+      lastSeen: new Date().toISOString(),
+      description: `${jolt.magnitude}G road shock detected at ${Math.round(jolt.speedKmh)} km/h`,
+      magnitude: jolt.magnitude,
+      speedKmh: jolt.speedKmh,
+    }).catch(() => {});
+
     this._notifyListeners();
   }
 }

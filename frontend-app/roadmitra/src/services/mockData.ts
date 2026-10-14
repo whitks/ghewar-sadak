@@ -15,6 +15,9 @@ export interface Hazard {
   lastSeen: string;
   isSimulated?: boolean;
   description?: string;
+  photoUri?: string;
+  magnitude?: number;
+  speedKmh?: number;
 }
 
 export interface Trip {

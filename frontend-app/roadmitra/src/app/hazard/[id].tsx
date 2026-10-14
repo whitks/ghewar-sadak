@@ -1,11 +1,12 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, ScrollView,
+  View, Text, StyleSheet, TouchableOpacity, ScrollView, Image,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { MOCK_HAZARDS, Hazard } from '../../services/mockData';
+import { storage } from '../../services/storage';
 import { HAZARD_LABELS, HAZARD_VECTOR_ICONS, STATUS_COLORS } from '../../constants/hazardTypes';
 import { StatusBadge } from '../../components/ui/StatusBadge';
 import { AppColors } from '../../constants/theme';
@@ -17,8 +18,13 @@ export default function HazardDetailScreen() {
   const [hazard, setHazard] = useState<Hazard | null>(null);
 
   useEffect(() => {
-    const found = MOCK_HAZARDS.find((h) => h.id === id);
-    setHazard(found ?? null);
+    async function load() {
+      const stored = await storage.getHazards();
+      const all = [...stored, ...MOCK_HAZARDS];
+      const found = all.find((h) => h.id === id);
+      setHazard(found ?? null);
+    }
+    load();
   }, [id]);
 
   if (!hazard) {
@@ -139,6 +145,18 @@ export default function HazardDetailScreen() {
           </Text>
         </Card>
 
+        {/* Visual Evidence Photo */}
+        {hazard.photoUri && (
+          <Card variant="elevated">
+            <Text style={styles.cardTitle}>Visual Evidence (Camera Capture)</Text>
+            <Image
+              source={{ uri: hazard.photoUri }}
+              style={styles.evidencePhoto}
+              resizeMode="cover"
+            />
+          </Card>
+        )}
+
         {/* Evidence Metadata */}
         <Card variant="elevated">
           <Text style={styles.cardTitle}>Observation Provenance</Text>
@@ -152,6 +170,14 @@ export default function HazardDetailScreen() {
                 : 'Phone IMU Accelerometer'}
             </Text>
           </View>
+          {hazard.magnitude && (
+            <View style={styles.evidenceRow}>
+              <Text style={styles.evidenceLabel}>Peak Accelerometer Jolt</Text>
+              <Text style={[styles.evidenceValue, { color: AppColors.accent, fontWeight: '800' }]}>
+                {hazard.magnitude}G {hazard.speedKmh ? `@ ${Math.round(hazard.speedKmh)} km/h` : ''}
+              </Text>
+            </View>
+          )}
           <View style={styles.evidenceRow}>
             <Text style={styles.evidenceLabel}>Corroborating Devices</Text>
             <Text style={styles.evidenceValue}>
@@ -301,5 +327,11 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: AppColors.borderLight,
+  },
+  evidencePhoto: {
+    width: '100%',
+    height: 200,
+    borderRadius: 12,
+    marginTop: 10,
   },
 });

@@ -104,6 +104,23 @@ export default function ReportScreen() {
       photo_uri: photoUri ?? undefined,
     };
 
+    // Save to local hazards so it immediately appears on the Map Radar
+    await storage.addHazard({
+      id: `haz-${reportId}`,
+      lat: currentCoords.lat,
+      lon: currentCoords.lon,
+      type: hazardType,
+      status: 'confirmed',
+      confidence: 0.90,
+      severity: 75,
+      source: photoUri ? 'both' : 'phone',
+      cameraScore: photoUri ? 0.90 : undefined,
+      deviceCount: 1,
+      lastSeen: new Date().toISOString(),
+      description: notes.trim() || `${HAZARD_LABELS[hazardType]} reported by user`,
+      photoUri: photoUri ?? undefined,
+    });
+
     try {
       const res = await api.postReport(payload);
       const acceptedCount = String(res.accepted ?? 1);

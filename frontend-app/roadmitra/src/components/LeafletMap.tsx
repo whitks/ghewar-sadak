@@ -54,6 +54,9 @@ export function LeafletMap({
             : AppColors.danger,
         source: h.source,
         devices: h.deviceCount,
+        photoUri: h.photoUri || null,
+        magnitude: h.magnitude || null,
+        speedKmh: h.speedKmh || null,
       })),
     );
 
@@ -177,10 +180,19 @@ export function LeafletMap({
 
       const m = L.marker([h.lat, h.lon], { icon: icon }).addTo(window.mapInstance);
       
+      let extraHtml = '';
+      if (h.magnitude) {
+        extraHtml += \`<div style="color: #FF4E3A; font-weight: 700; font-size: 11px; margin-top: 4px;">⚡ \${h.magnitude}G Road Shock \${h.speedKmh ? 'at ' + Math.round(h.speedKmh) + ' km/h' : ''}</div>\`;
+      }
+      if (h.photoUri) {
+        extraHtml += \`<img src="\${h.photoUri}" style="width: 100%; height: 80px; object-fit: cover; border-radius: 8px; margin-top: 6px;" />\`;
+      }
+
       const popupHtml = \`
         <div class="popup-title">\${h.label}</div>
         <div class="popup-conf">\${h.confidence}% Fused Confidence</div>
         <div class="popup-sub">\${h.devices} device report\${h.devices !== 1 ? 's' : ''} · \${h.source}</div>
+        \${extraHtml}
       \`;
       m.bindPopup(popupHtml, { offset: [0, -32] });
 

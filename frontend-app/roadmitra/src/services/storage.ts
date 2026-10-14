@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Trip, UploadQueueItem } from './mockData';
+import { Trip, UploadQueueItem, Hazard } from './mockData';
 
-export type { Trip, UploadQueueItem };
+export type { Trip, UploadQueueItem, Hazard };
 
 export interface RoutePoint {
   lat: number;
@@ -43,6 +43,7 @@ const KEYS = {
   TRIPS: 'trips',
   UPLOAD_QUEUE: 'upload_queue',
   SETTINGS: 'settings',
+  HAZARDS: 'hazards',
 };
 
 export const storage = {
@@ -53,6 +54,26 @@ export const storage = {
 
   async setOnboardingDone(): Promise<void> {
     await safeSetItem(KEYS.ONBOARDING_DONE, 'true');
+  },
+
+  async getHazards(): Promise<Hazard[]> {
+    const v = await safeGetItem(KEYS.HAZARDS);
+    return v ? JSON.parse(v) : [];
+  },
+
+  async saveHazards(hazards: Hazard[]): Promise<void> {
+    await safeSetItem(KEYS.HAZARDS, JSON.stringify(hazards));
+  },
+
+  async addHazard(hazard: Hazard): Promise<void> {
+    const hazards = await storage.getHazards();
+    // Prepend new hazard
+    hazards.unshift(hazard);
+    // Keep up to 200 hazards locally
+    if (hazards.length > 200) {
+      hazards.length = 200;
+    }
+    await storage.saveHazards(hazards);
   },
 
   async getTrips(): Promise<Trip[]> {
@@ -103,6 +124,7 @@ export const storage = {
     await safeRemoveItem(KEYS.TRIPS);
     await safeRemoveItem(KEYS.UPLOAD_QUEUE);
     await safeRemoveItem(KEYS.SETTINGS);
+    await safeRemoveItem(KEYS.HAZARDS);
   },
 };
 
