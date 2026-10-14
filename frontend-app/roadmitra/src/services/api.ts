@@ -48,8 +48,8 @@ export interface UploadFrameResponse {
   device_id?: string;
 }
 
-// Set your backend IP (defaults to API_BASE_URL or local development host)
-export const BACKEND_URL = API_BASE_URL || 'http://127.0.0.1:8000';
+// Set your backend IP (defaults to API_BASE_URL or deployed cloud backend)
+export const BACKEND_URL = API_BASE_URL || 'https://ghewar-sadak.onrender.com';
 
 function buildUrl(baseUrl: string, path: string): string {
   const cleanBase = baseUrl.replace(/\/+$/, '');
