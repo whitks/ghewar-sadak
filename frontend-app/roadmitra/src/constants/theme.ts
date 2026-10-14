@@ -1,26 +1,66 @@
-/**
- * Below are the colors that are used in the app. The colors are defined in the light and dark mode.
- * There are many other ways to style your app. For example, [Nativewind](https://www.nativewind.dev/), [Tamagui](https://tamagui.dev/), [unistyles](https://reactnativeunistyles.vercel.app), etc.
- */
-
-import '@/global.css';
-
 import { Platform } from 'react-native';
+
+// ─── Organic Whitish / Cream Palette (FoodShelterConnect style) ───────────────
+export const AppColors = {
+  // Brand Core
+  primary: '#18352b',       // Deep Forest Dark Ink
+  primaryLight: '#264e40',  // Slightly lighter forest
+  secondary: '#d7ee85',     // Vibrant Lime Accent
+  accent: '#e11d48',        // Alert Hazard Crimson
+  accentOrange: '#ea580c',  // Road Orange
+  lime: '#9fbd42',          // Lime Accent Green
+  coral: '#ef8c5c',         // Soft Warm Coral
+  teal: '#5c9686',          // Sage Teal
+
+  // Backgrounds & Surfaces (Whitish/Paper/Organic Cream)
+  bg: '#f4f2eb',            // Organic Warm Cream Page Background
+  surface: '#ffffff',       // Pure Clean White Surface
+  card: '#ffffff',          // White Card Surface
+  cardAlt: '#eef2ea',       // Soft Sage Card Container
+  cardMuted: '#f8f7f2',     // Paper Muted Card
+  border: '#e2e7dc',        // Subtle Line Border
+  borderLight: '#edf1e8',   // Lightest Border
+  borderFocus: '#18352b',   // Focused Line Border
+  shadow: '#cbd7c2',        // Soft Organic Shadow
+
+  // Status & Badges
+  success: '#15803d',
+  successBg: '#ecfdf5',
+  successBorder: '#bbf7d0',
+
+  warning: '#b45309',
+  warningBg: '#fffbeb',
+  warningBorder: '#fde68a',
+
+  danger: '#b91c1c',
+  dangerBg: '#fef2f2',
+  dangerBorder: '#fecaca',
+
+  info: '#0369a1',
+  infoBg: '#f0f9ff',
+  infoBorder: '#bae6fd',
+
+  // Typography
+  textPrimary: '#18352b',   // Deep Forest High Contrast Ink
+  textSecondary: '#607067', // Warm Slate Muted
+  textMuted: '#8a9990',     // Light Slate Subtext
+  textWhite: '#ffffff',
+} as const;
 
 export const Colors = {
   light: {
-    text: '#000000',
-    background: '#ffffff',
-    backgroundElement: '#F0F0F3',
-    backgroundSelected: '#E0E1E6',
-    textSecondary: '#60646C',
+    text: AppColors.textPrimary,
+    background: AppColors.bg,
+    backgroundElement: AppColors.cardMuted,
+    backgroundSelected: AppColors.cardAlt,
+    textSecondary: AppColors.textSecondary,
   },
   dark: {
-    text: '#ffffff',
-    background: '#000000',
-    backgroundElement: '#212225',
-    backgroundSelected: '#2E3135',
-    textSecondary: '#B0B4BA',
+    text: AppColors.textPrimary,
+    background: AppColors.bg,
+    backgroundElement: AppColors.cardMuted,
+    backgroundSelected: AppColors.cardAlt,
+    textSecondary: AppColors.textSecondary,
   },
 } as const;
 
@@ -28,13 +68,9 @@ export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 
 export const Fonts = Platform.select({
   ios: {
-    /** iOS `UIFontDescriptorSystemDesignDefault` */
     sans: 'system-ui',
-    /** iOS `UIFontDescriptorSystemDesignSerif` */
     serif: 'ui-serif',
-    /** iOS `UIFontDescriptorSystemDesignRounded` */
     rounded: 'ui-rounded',
-    /** iOS `UIFontDescriptorSystemDesignMonospaced` */
     mono: 'ui-monospace',
   },
   default: {
@@ -44,10 +80,10 @@ export const Fonts = Platform.select({
     mono: 'monospace',
   },
   web: {
-    sans: 'var(--font-display)',
-    serif: 'var(--font-serif)',
-    rounded: 'var(--font-rounded)',
-    mono: 'var(--font-mono)',
+    sans: 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    serif: 'Georgia, "Times New Roman", serif',
+    rounded: '"SF Pro Rounded", sans-serif',
+    mono: 'monospace',
   },
 });
 

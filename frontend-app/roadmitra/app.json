@@ -1,23 +1,36 @@
 {
   "expo": {
-    "name": "roadmitra",
-    "slug": "roadmitra",
+    "name": "RoadPulse",
+    "slug": "roadpulse",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "roadmitra",
-    "userInterfaceStyle": "automatic",
+    "scheme": "roadpulse",
+    "userInterfaceStyle": "light",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "RoadPulse uses your location to map road hazards precisely.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "RoadPulse uses background location to record trips even when the screen is off.",
+        "NSMotionUsageDescription": "RoadPulse reads your accelerometer to detect road vibration events.",
+        "NSCameraUsageDescription": "RoadPulse lets you take photos of road hazards to attach to manual reports.",
+        "NSPhotoLibraryUsageDescription": "RoadPulse lets you attach photos from your library to manual hazard reports."
+      }
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#f4f2eb",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundImage": "./assets/images/android-icon-background.png"
       },
-      "predictiveBackGestureEnabled": false
+      "permissions": [
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION",
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.HIGH_SAMPLING_RATE_SENSORS"
+      ]
     },
     "web": {
       "output": "static",
@@ -28,15 +41,26 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#f4f2eb",
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "RoadPulse uses location to map road hazards."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "RoadPulse lets you photograph road hazards."
         }
       ]
     ],
     "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
+      "typedRoutes": true
     }
   }
 }
