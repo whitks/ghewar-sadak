@@ -1,0 +1,19 @@
+{
+  "image": "image.png",
+  "model": "vinothvikas1987/pothole-detection-yolov8",
+  "confidence_threshold": 0.15,
+  "total_detections": 1,
+  "detections": [
+    {
+      "class_id": 2,
+      "class_name": "Alligator Crack",
+      "confidence": 0.8266,
+      "bbox_xyxy": [
+        1.04,
+        102.32,
+        459.7,
+        262.27
+      ]
+    }
+  ]
+}
