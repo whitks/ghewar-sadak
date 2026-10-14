@@ -165,6 +165,7 @@ class TripRecorderService {
   private _timerInterval: ReturnType<typeof setInterval> | null = null;
   private _listeners: Set<TelemetryListener> = new Set();
   private _lastRoutePoint: { lat: number; lon: number } | null = null;
+  private _lastRouteTimestamp = 0;
 
   // ── Gravity Separation & Spatial Decomposition State ─────────────────────
   private _gravity = { x: 0, y: 0, z: 1.0 };
@@ -285,6 +286,7 @@ class TripRecorderService {
     this._roadQuality = 'smooth';
     this._roadQualityScore = 95;
     this._lastRoutePoint = null;
+    this._lastRouteTimestamp = 0;
     this._lastJolt = null;
     this._lastPatch = null;
 
@@ -385,6 +387,8 @@ class TripRecorderService {
     this._potholeCount = 0;
     this._speedBreakerCount = 0;
     this._patchCount = 0;
+    this._lastRoutePoint = null;
+    this._lastRouteTimestamp = 0;
     this._lastJolt = null;
     this._lastPatch = null;
     this._dynamicMagBuffer = [];
@@ -405,23 +409,10 @@ class TripRecorderService {
         return;
       }
 
-      const initial = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
-      }).catch(() => null);
-
-      if (initial) {
-        this._updateLocation(
-          initial.coords.latitude,
-          initial.coords.longitude,
-          (initial.coords.speed ?? 0) * 3.6,
-          initial.coords.accuracy,
-        );
-      }
-
       this._locationSubscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.BestForNavigation,
-          distanceInterval: 2, // meters
+          distanceInterval: 3, // meters minimum displacement
           timeInterval: 1000,
         },
         (loc) => {
@@ -446,29 +437,81 @@ class TripRecorderService {
   ): void {
     if (!this._isRecording || !this._currentTrip) return;
 
-    this._currentSpeed = Math.max(0, Math.round(speedKmh));
-    this._gpsAccuracy = accuracy ? Math.round(accuracy) : null;
+    const now = Date.now();
     this._currentCoords = { lat, lon };
+    this._gpsAccuracy = accuracy ? Math.round(accuracy) : null;
+    this._currentSpeed = Math.max(0, Math.round(speedKmh));
 
-    if (this._lastRoutePoint) {
-      const delta = haversineKm(
-        this._lastRoutePoint.lat,
-        this._lastRoutePoint.lon,
-        lat,
-        lon,
-      );
-      if (delta < 2) {
-        this._currentTrip.distance = (this._currentTrip.distance ?? 0) + delta;
-        this._currentTrip.distanceKm = Number(this._currentTrip.distance.toFixed(2));
+    // 1. Accuracy gate: reject fixes with accuracy worse than 25m
+    // (Indoor multipath, cell tower triangulation, or satellite acquisition phase)
+    const isAccurate = accuracy !== null && accuracy <= 25;
+    if (!isAccurate) {
+      this._notifyListeners();
+      return;
+    }
+
+    // 2. Initialize route on first accurate satellite lock
+    if (!this._lastRoutePoint) {
+      this._lastRoutePoint = { lat, lon };
+      this._lastRouteTimestamp = now;
+      if (!this._currentTrip.route) {
+        this._currentTrip.route = [];
       }
+      this._currentTrip.route.push({ lat, lon, timestamp: now });
+      this._notifyListeners();
+      return;
     }
 
-    const point: RoutePoint = { lat, lon, timestamp: Date.now() };
-    if (!this._currentTrip.route) {
-      this._currentTrip.route = [];
+    // 3. Compute distance and time from previous recorded point
+    const deltaKm = haversineKm(
+      this._lastRoutePoint.lat,
+      this._lastRoutePoint.lon,
+      lat,
+      lon,
+    );
+    const deltaMeters = deltaKm * 1000;
+    const timeElapsedSec = Math.max(1, (now - this._lastRouteTimestamp) / 1000);
+    const impliedSpeedKmh = deltaKm / (timeElapsedSec / 3600);
+
+    // 4. Teleport / Cold-start anomaly check (e.g. jumped >150m at impossible speed >130 km/h)
+    if (deltaMeters > 150 && impliedSpeedKmh > 130) {
+      // If we only have 1 point so far, the first point was likely a stale cell-tower cache.
+      // Reset the start point to this real GPS coordinate without accumulating false distance.
+      if (this._currentTrip.route && this._currentTrip.route.length <= 1) {
+        this._currentTrip.route = [{ lat, lon, timestamp: now }];
+        this._currentTrip.distance = 0;
+        this._currentTrip.distanceKm = 0;
+        this._lastRoutePoint = { lat, lon };
+        this._lastRouteTimestamp = now;
+      }
+      // Outlier jump ignored
+      this._notifyListeners();
+      return;
     }
-    this._currentTrip.route.push(point);
-    this._lastRoutePoint = { lat, lon };
+
+    // 5. Stationary Filter (Zero-displacement Noise Gate):
+    // When the phone is at one place / indoors / at a red light:
+    // GPS jitter is typically 3-10m with speed near 0.
+    // If movement is under noise floor (or speed < 3.5 km/h with displacement < 15m),
+    // the phone is stationary. Do NOT add to distance, do NOT add jitter lines to route!
+    const effectiveNoiseFloor = Math.max(8, (accuracy ?? 15) * 0.75);
+    if (deltaMeters < effectiveNoiseFloor || (this._currentSpeed < 3.5 && deltaMeters < 15)) {
+      this._notifyListeners();
+      return;
+    }
+
+    // 6. Valid road progression: accumulate distance and record route point
+    if (deltaMeters < 500) {
+      this._currentTrip.distance = (this._currentTrip.distance ?? 0) + deltaKm;
+      this._currentTrip.distanceKm = Number(this._currentTrip.distance.toFixed(2));
+
+      if (!this._currentTrip.route) {
+        this._currentTrip.route = [];
+      }
+      this._currentTrip.route.push({ lat, lon, timestamp: now });
+      this._lastRoutePoint = { lat, lon };
+      this._lastRouteTimestamp = now;
+    }
 
     this._notifyListeners();
   }

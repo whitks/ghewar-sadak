@@ -28,6 +28,7 @@ export default function ActiveTripScreen() {
     speedBreakerCount,
     patchCount,
     gpsAccuracy,
+    distanceKm,
     coords,
     lastJolt,
     lastPatch,
@@ -83,8 +84,15 @@ export default function ActiveTripScreen() {
   };
 
   const handleStop = async () => {
-    await stopTrip();
-    router.replace('/trip/summary');
+    const finishedTrip = await stopTrip();
+    if (finishedTrip?.id) {
+      router.replace({
+        pathname: '/trip/summary',
+        params: { id: finishedTrip.id },
+      });
+    } else {
+      router.replace('/trip/summary');
+    }
   };
 
   // Quick snap camera to capture visible pothole / road defect
@@ -285,6 +293,11 @@ export default function ActiveTripScreen() {
                 {potholeCount}
               </Text>
               <Text style={styles.metricLabel}>potholes</Text>
+            </View>
+            <View style={styles.metricDivider} />
+            <View style={styles.metric}>
+              <Text style={styles.metricValue}>{distanceKm.toFixed(1)}</Text>
+              <Text style={styles.metricLabel}>km</Text>
             </View>
             <View style={styles.metricDivider} />
             <View style={styles.metric}>

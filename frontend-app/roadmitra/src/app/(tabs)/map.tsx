@@ -1,13 +1,14 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Image,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
-import { MOCK_HAZARDS, Hazard } from '../../services/mockData';
+import { MOCK_HAZARDS, MOCK_TRIPS, Hazard, Trip } from '../../services/mockData';
 import { storage } from '../../services/storage';
+import { RoadSegment, generateAllRoadSegments } from '../../services/roadSegmentation';
 import { HAZARD_LABELS, HAZARD_VECTOR_ICONS } from '../../constants/hazardTypes';
 import { AppColors } from '../../constants/theme';
 import { Button } from '../../components/ui/Button';
@@ -23,30 +24,43 @@ type FilterType = 'all' | 'camera' | 'phone' | 'both';
 export default function MapScreen() {
   const [filter, setFilter] = useState<FilterType>('all');
   const [hazards, setHazards] = useState<Hazard[]>(MOCK_HAZARDS);
+  const [roadSegments, setRoadSegments] = useState<RoadSegment[]>([]);
   const [selectedHazard, setSelectedHazard] = useState<Hazard | null>(null);
+  const [selectedSegment, setSelectedSegment] = useState<RoadSegment | null>(null);
   const [userLocation, setUserLocation] = useState(DEFAULT_COORDS);
   const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
 
-  const loadHazards = useCallback(async () => {
+  const loadHazardsAndRoutes = useCallback(async () => {
     try {
       const storedHazards = await storage.getHazards();
+      const storedTrips = await storage.getTrips();
+
+      const validTrips = (storedTrips || []).filter(
+        (t): t is Trip => Boolean(t && t.id && (t.distanceKm === undefined || t.distanceKm >= 0.05))
+      );
+      const allTrips = [...validTrips, ...MOCK_TRIPS];
+
+      let allHazards: Hazard[] = MOCK_HAZARDS;
       if (storedHazards && storedHazards.length > 0) {
-        // Real hazards take priority at the top of the radar
         const storedIds = new Set(storedHazards.map((h) => h.id));
         const remainingMock = MOCK_HAZARDS.filter((h) => !storedIds.has(h.id));
-        setHazards([...storedHazards, ...remainingMock]);
-      } else {
-        setHazards(MOCK_HAZARDS);
+        allHazards = [...storedHazards, ...remainingMock];
       }
+
+      setHazards(allHazards);
+
+      // Segment continuous visited roads into ~100m slices colored by safety severity
+      const segments = generateAllRoadSegments(allTrips, allHazards);
+      setRoadSegments(segments);
     } catch (err) {
-      console.warn('Failed loading stored hazards:', err);
+      console.warn('Failed loading stored hazards and routes:', err);
     }
   }, []);
 
   useFocusEffect(
     useCallback(() => {
-      loadHazards();
-    }, [loadHazards])
+      loadHazardsAndRoutes();
+    }, [loadHazardsAndRoutes])
   );
 
   useEffect(() => {
@@ -66,6 +80,24 @@ export default function MapScreen() {
     }
     getUserLocation();
   }, []);
+
+  const totalSurveyedKm = useMemo(() => {
+    const meters = roadSegments.reduce((acc, s) => acc + s.distanceMeters, 0);
+    return (meters / 1000).toFixed(1);
+  }, [roadSegments]);
+
+  const criticalCount = useMemo(
+    () => roadSegments.filter((s) => s.quality === 'critical').length,
+    [roadSegments]
+  );
+  const moderateCount = useMemo(
+    () => roadSegments.filter((s) => s.quality === 'moderate').length,
+    [roadSegments]
+  );
+  const healthyCount = useMemo(
+    () => roadSegments.filter((s) => s.quality === 'good').length,
+    [roadSegments]
+  );
 
   const filtered = hazards.filter((h) =>
     filter === 'all' ? true : h.source === filter,
@@ -91,7 +123,7 @@ export default function MapScreen() {
           <View>
             <Text style={styles.pageTitle}>Hazard Radar</Text>
             <Text style={styles.pageSub}>
-              {filtered.length} defect clusters detected nearby
+              {filtered.length} defects · {roadSegments.length} road sections surveyed
             </Text>
           </View>
           <View style={styles.viewModeToggle}>
@@ -174,14 +206,42 @@ export default function MapScreen() {
           </ScrollView>
         </View>
 
+        {/* 100m Road Condition Heatmap Legend Bar */}
+        <View style={styles.legendBar}>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: '#EF4444' }]} />
+            <Text style={styles.legendText}>Critical ({criticalCount})</Text>
+          </View>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: '#F59E0B' }]} />
+            <Text style={styles.legendText}>Moderate ({moderateCount})</Text>
+          </View>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: '#22C55E' }]} />
+            <Text style={styles.legendText}>Healthy ({healthyCount})</Text>
+          </View>
+          <View style={styles.surveyedPill}>
+            <Ionicons name="speedometer-outline" size={11} color={AppColors.primary} />
+            <Text style={styles.surveyedText}>{totalSurveyedKm} km</Text>
+          </View>
+        </View>
+
         {/* Main Content: Map or List View */}
         {viewMode === 'map' ? (
           <View style={styles.mapContainer}>
             <LeafletMap
               hazards={filtered}
+              roadSegments={roadSegments}
               center={userLocation}
               zoom={14}
-              onSelectHazard={(h) => setSelectedHazard(h)}
+              onSelectHazard={(h) => {
+                setSelectedSegment(null);
+                setSelectedHazard(h);
+              }}
+              onSelectSegment={(s) => {
+                setSelectedHazard(null);
+                setSelectedSegment(s);
+              }}
             />
 
             {/* Floating Recenter Button */}
@@ -192,6 +252,53 @@ export default function MapScreen() {
             >
               <Ionicons name="locate" size={20} color={AppColors.primary} />
             </TouchableOpacity>
+
+            {/* Selected Road Segment Callout */}
+            {selectedSegment && !selectedHazard && (
+              <View style={styles.calloutCard}>
+                <View style={styles.calloutHeader}>
+                  <View style={[styles.calloutIconBox, { backgroundColor: selectedSegment.color + '20', borderColor: selectedSegment.color }]}>
+                    <Ionicons
+                      name={
+                        selectedSegment.quality === 'critical'
+                          ? 'alert-circle'
+                          : selectedSegment.quality === 'moderate'
+                          ? 'warning'
+                          : 'shield-checkmark'
+                      }
+                      size={22}
+                      color={selectedSegment.color}
+                    />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.calloutTitle}>
+                      {selectedSegment.quality === 'critical'
+                        ? 'Critical Road Stretch'
+                        : selectedSegment.quality === 'moderate'
+                        ? 'Moderate Wear Road'
+                        : 'Healthy Road Section'}
+                    </Text>
+                    <Text style={styles.calloutSub}>
+                      ~{selectedSegment.distanceMeters}m Surveyed · {selectedSegment.hazardCount} defect(s) logged
+                    </Text>
+                  </View>
+                  <TouchableOpacity onPress={() => setSelectedSegment(null)} style={styles.closeBtn}>
+                    <Ionicons name="close" size={18} color={AppColors.textSecondary} />
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={styles.calloutDesc}>{selectedSegment.summary}</Text>
+
+                {selectedSegment.maxGForce && (
+                  <View style={styles.calloutShock}>
+                    <Ionicons name="flash" size={14} color={AppColors.accent} />
+                    <Text style={styles.calloutShockText}>
+                      Peak Road Shock: {selectedSegment.maxGForce.toFixed(2)}G
+                    </Text>
+                  </View>
+                )}
+              </View>
+            )}
 
             {/* Selected Hazard Card Callout */}
             {selectedHazard && (
@@ -349,6 +456,48 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     gap: 8,
     flexDirection: 'row',
+  },
+  legendBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    backgroundColor: AppColors.surface,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: AppColors.border,
+  },
+  legendItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  legendDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+  },
+  legendText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: AppColors.textPrimary,
+  },
+  surveyedPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: AppColors.cardAlt,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  surveyedText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: AppColors.primary,
   },
   filterBtn: {
     backgroundColor: AppColors.surface,

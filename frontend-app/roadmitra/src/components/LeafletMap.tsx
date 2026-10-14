@@ -2,21 +2,26 @@ import React, { useRef, useMemo, useEffect } from 'react';
 import { View, StyleSheet, Platform, ActivityIndicator } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Hazard } from '../services/mockData';
+import { RoadSegment } from '../services/roadSegmentation';
 import { HAZARD_LABELS } from '../constants/hazardTypes';
 import { AppColors } from '../constants/theme';
 
 export interface LeafletMapProps {
   hazards: Hazard[];
+  roadSegments?: RoadSegment[];
   center: { latitude: number; longitude: number };
   zoom?: number;
   onSelectHazard?: (hazard: Hazard) => void;
+  onSelectSegment?: (segment: RoadSegment) => void;
 }
 
 export function LeafletMap({
   hazards,
+  roadSegments = [],
   center,
   zoom = 15,
   onSelectHazard,
+  onSelectSegment,
 }: LeafletMapProps) {
   const webViewRef = useRef<WebView>(null);
 
@@ -57,6 +62,19 @@ export function LeafletMap({
         photoUri: h.photoUri || null,
         magnitude: h.magnitude || null,
         speedKmh: h.speedKmh || null,
+      })),
+    );
+
+    const roadSegmentsJson = JSON.stringify(
+      roadSegments.map((s) => ({
+        id: s.id,
+        coordinates: s.coordinates,
+        distanceMeters: s.distanceMeters,
+        quality: s.quality,
+        color: s.color,
+        hazardCount: s.hazardCount,
+        maxGForce: s.maxGForce || null,
+        summary: s.summary,
       })),
     );
 
@@ -160,10 +178,60 @@ export function LeafletMap({
     });
     window.userMarker = L.marker([${center.latitude}, ${center.longitude}], {
       icon: userIcon,
-      zIndexOffset: 1000
+      zIndexOffset: 2000
     }).addTo(window.mapInstance);
 
-    // Render Hazard Clusters
+    // ── Render Visited Road Condition Segments (100m slices) ───────────────
+    const segments = ${roadSegmentsJson};
+    segments.forEach(seg => {
+      if (!seg.coordinates || seg.coordinates.length < 2) return;
+
+      // Outer glow line for clear contrast over OpenStreetMap
+      L.polyline(seg.coordinates, {
+        color: '#ffffff',
+        weight: 9,
+        opacity: 0.85,
+        lineCap: 'round',
+        lineJoin: 'round'
+      }).addTo(window.mapInstance);
+
+      // Colored safety severity line (Red / Yellow / Green)
+      const poly = L.polyline(seg.coordinates, {
+        color: seg.color,
+        weight: 6,
+        opacity: 0.95,
+        lineCap: 'round',
+        lineJoin: 'round'
+      }).addTo(window.mapInstance);
+
+      const qualityBadge = seg.quality === 'critical'
+        ? '<span style="color:#DC2626; font-weight:800; font-size:12px;">CRITICAL DEFECTS (RED)</span>'
+        : seg.quality === 'moderate'
+        ? '<span style="color:#D97706; font-weight:800; font-size:12px;">MODERATE WEAR (YELLOW)</span>'
+        : '<span style="color:#16A34A; font-weight:800; font-size:12px;">HEALTHY ROAD (GREEN)</span>';
+
+      const segPopupHtml = \`
+        <div style="margin-bottom: 3px;">\${qualityBadge}</div>
+        <div style="font-size: 13px; color: #18352b; font-weight: 700;">
+          ~\${seg.distanceMeters}m Surveyed Section
+        </div>
+        <div style="font-size: 11px; color: #607067; margin-top: 2px;">
+          \${seg.summary}
+        </div>
+      \`;
+      poly.bindPopup(segPopupHtml);
+
+      poly.on('click', () => {
+        const payload = JSON.stringify({ type: 'segment_select', id: seg.id });
+        if (window.ReactNativeWebView) {
+          window.ReactNativeWebView.postMessage(payload);
+        } else if (window.parent) {
+          window.parent.postMessage(payload, '*');
+        }
+      });
+    });
+
+    // ── Render Hazard Spot Pinpoints (On Top of Road Lines) ─────────────────
     const hazards = ${hazardsJson};
     hazards.forEach(h => {
       const icon = L.divIcon({
@@ -178,7 +246,7 @@ export function LeafletMap({
         iconAnchor: [17, 40]
       });
 
-      const m = L.marker([h.lat, h.lon], { icon: icon }).addTo(window.mapInstance);
+      const m = L.marker([h.lat, h.lon], { icon: icon, zIndexOffset: 1000 }).addTo(window.mapInstance);
       
       let extraHtml = '';
       if (h.magnitude) {
@@ -208,7 +276,7 @@ export function LeafletMap({
   </script>
 </body>
 </html>`;
-  }, [hazards, center.latitude, center.longitude, zoom]);
+  }, [hazards, roadSegments, center.latitude, center.longitude, zoom]);
 
   const handleMessage = (event: any) => {
     try {
@@ -216,11 +284,32 @@ export function LeafletMap({
       if (data.type === 'hazard_select' && onSelectHazard) {
         const found = hazards.find((h) => h.id === data.id);
         if (found) onSelectHazard(found);
+      } else if (data.type === 'segment_select' && onSelectSegment) {
+        const found = roadSegments.find((s) => s.id === data.id);
+        if (found) onSelectSegment(found);
       }
     } catch (err) {
       console.warn('Error parsing map message:', err);
     }
   };
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const handleWebMsg = (e: MessageEvent) => {
+      try {
+        const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+        if (data?.type === 'hazard_select' && onSelectHazard) {
+          const found = hazards.find((h) => h.id === data.id);
+          if (found) onSelectHazard(found);
+        } else if (data?.type === 'segment_select' && onSelectSegment) {
+          const found = roadSegments.find((s) => s.id === data.id);
+          if (found) onSelectSegment(found);
+        }
+      } catch {}
+    };
+    window.addEventListener('message', handleWebMsg);
+    return () => window.removeEventListener('message', handleWebMsg);
+  }, [hazards, roadSegments, onSelectHazard, onSelectSegment]);
 
   if (Platform.OS === 'web') {
     return (

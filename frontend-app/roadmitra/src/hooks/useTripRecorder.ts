@@ -46,6 +46,7 @@ export function useTripRecorder() {
     lastPatch: telemetry.lastPatch,
     currentTripId: telemetry.currentTrip?.id ?? null,
     currentTrip: telemetry.currentTrip,
+    distanceKm: telemetry.currentTrip?.distanceKm ?? 0,
     startTrip,
     stopTrip,
   };

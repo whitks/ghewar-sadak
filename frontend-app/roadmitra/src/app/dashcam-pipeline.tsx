@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -90,51 +90,35 @@ export default function DashcamPipelineScreen() {
     return unsubscribe;
   }, [activeFrameTab]);
 
-  // 10-Second Auto Capture Interval for Phone Camera
-  useEffect(() => {
-    let timer: any = null;
-    if (isAutoCapturing) {
-      timer = setInterval(() => {
-        setNextCaptureSec((prev) => {
-          if (prev <= 1) {
-            // Trigger 10-second capture
-            captureAndDetectFrame();
-            return 10;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    } else {
-      setNextCaptureSec(10);
-    }
-    return () => {
-      if (timer) clearInterval(timer);
-    };
-  }, [isAutoCapturing, liveGps]);
+  const isUploadingRef = useRef(false);
+  const liveGpsRef = useRef(liveGps);
+  liveGpsRef.current = liveGps;
 
   /**
-   * Take a REAL frame from the phone's camera, upload to AI server, and display bounding boxes!
+   * Take a real frame from the phone's camera, upload to AI server, and display bounding boxes.
+   * Optimized with moderate resolution and non-blocking flags for zero preview stutter.
    */
-  const captureAndDetectFrame = async () => {
-    if (!cameraRef.current) return;
+  const captureAndDetectFrame = useCallback(async () => {
+    if (!cameraRef.current || isUploadingRef.current) return;
+    isUploadingRef.current = true;
     setIsUploadingLive(true);
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.7,
+        quality: 0.45,
         skipProcessing: true,
+        shutterSound: false,
       });
 
       if (photo?.uri) {
         setLatestCapturedUri(photo.uri);
 
-        // Upload to Python backend server
-        const res = await uploadDashcamFrame(photo.uri, liveGps, 'phone_dashcam_live');
+        const currentGps = liveGpsRef.current;
+        const res = await uploadDashcamFrame(photo.uri, currentGps, 'phone_dashcam_live');
 
         if (res?.detections) {
           setLatestDetections(res.detections);
 
-          // Add to extracted frames
           const newFrame: ExtractedFrame = {
             id: `live-frame-${Date.now()}`,
             frameIndex: pipelineState.extractedFrames.length + 1,
@@ -147,7 +131,7 @@ export default function DashcamPipelineScreen() {
             annotatedImageUrl: res.annotated_image_url
               ? `${BACKEND_URL}${res.annotated_image_url}`
               : undefined,
-            gps: liveGps,
+            gps: currentGps,
           };
 
           setActiveFrameTab(newFrame);
@@ -156,9 +140,33 @@ export default function DashcamPipelineScreen() {
     } catch (err: any) {
       console.warn('Camera capture / inference error:', err);
     } finally {
+      isUploadingRef.current = false;
       setIsUploadingLive(false);
     }
-  };
+  }, [pipelineState.extractedFrames.length]);
+
+  // Smooth 10-Second Auto Capture Countdown
+  useEffect(() => {
+    if (!isAutoCapturing) {
+      setNextCaptureSec(10);
+      return;
+    }
+
+    setNextCaptureSec(10);
+    const timer = setInterval(() => {
+      setNextCaptureSec((prev) => {
+        if (prev <= 1) {
+          setTimeout(() => {
+            captureAndDetectFrame();
+          }, 0);
+          return 10;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isAutoCapturing, captureAndDetectFrame]);
 
   const handleStartSimulation = async (fastMode: boolean = false) => {
     await dashcamService.runPipelineSimulation({
@@ -312,77 +320,77 @@ export default function DashcamPipelineScreen() {
                     style={styles.cameraView}
                     facing={facing}
                     enableTorch={isTorchOn}
-                  >
-                    {/* Viewfinder HUD Overlay */}
-                    <View style={styles.hudOverlay}>
-                      {/* Top Bar */}
-                      <View style={styles.hudTopRow}>
-                        <View style={styles.liveRecPill}>
-                          <View
-                            style={[
-                              styles.liveRecDot,
-                              isAutoCapturing && styles.liveRecDotBlinking,
-                            ]}
+                  />
+
+                  {/* Viewfinder HUD Overlay */}
+                  <View style={styles.hudOverlay} pointerEvents="box-none">
+                    {/* Top Bar */}
+                    <View style={styles.hudTopRow}>
+                      <View style={styles.liveRecPill}>
+                        <View
+                          style={[
+                            styles.liveRecDot,
+                            isAutoCapturing && styles.liveRecDotBlinking,
+                          ]}
+                        />
+                        <Text style={styles.liveRecText}>
+                          {isAutoCapturing
+                            ? `DASHCAM MODE: NEXT IN ${nextCaptureSec}s`
+                            : 'PHONE CAMERA READY'}
+                        </Text>
+                      </View>
+
+                      <View style={styles.cameraToolBtns}>
+                        <TouchableOpacity
+                          style={styles.toolBtn}
+                          onPress={() =>
+                            setFacing((f) => (f === 'back' ? 'front' : 'back'))
+                          }
+                        >
+                          <Ionicons name="camera-reverse" size={16} color="#ffffff" />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.toolBtn}
+                          onPress={() => setIsTorchOn((t) => !t)}
+                        >
+                          <Ionicons
+                            name={isTorchOn ? 'flash' : 'flash-off'}
+                            size={16}
+                            color={isTorchOn ? AppColors.secondary : '#ffffff'}
                           />
-                          <Text style={styles.liveRecText}>
-                            {isAutoCapturing
-                              ? `DASHCAM MODE: NEXT IN ${nextCaptureSec}s`
-                              : 'PHONE CAMERA READY'}
-                          </Text>
-                        </View>
-
-                        <View style={styles.cameraToolBtns}>
-                          <TouchableOpacity
-                            style={styles.toolBtn}
-                            onPress={() =>
-                              setFacing((f) => (f === 'back' ? 'front' : 'back'))
-                            }
-                          >
-                            <Ionicons name="camera-reverse" size={16} color="#ffffff" />
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={styles.toolBtn}
-                            onPress={() => setIsTorchOn((t) => !t)}
-                          >
-                            <Ionicons
-                              name={isTorchOn ? 'flash' : 'flash-off'}
-                              size={16}
-                              color={isTorchOn ? AppColors.secondary : '#ffffff'}
-                            />
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-
-                      {/* AI Targeting Crosshair */}
-                      <View style={styles.targetReticle}>
-                        <View style={styles.reticleCrosshair}>
-                          <Text style={styles.reticleText}>ROAD DETECTION ZONE</Text>
-                        </View>
-                      </View>
-
-                      {/* Bottom Telemetry HUD */}
-                      <View style={styles.hudBottomRow}>
-                        <View style={styles.hudItem}>
-                          <Ionicons name="speedometer-outline" size={13} color="#ffffff" />
-                          <Text style={styles.hudText}>
-                            {Math.round(liveGps.speed ?? 42)} km/h
-                          </Text>
-                        </View>
-                        <View style={styles.hudItem}>
-                          <Ionicons name="navigate-outline" size={13} color="#ffffff" />
-                          <Text style={styles.hudText}>
-                            {liveGps.latitude.toFixed(4)}°, {liveGps.longitude.toFixed(4)}°
-                          </Text>
-                        </View>
-                        {isUploadingLive && (
-                          <View style={styles.uploadingPill}>
-                            <ActivityIndicator size="small" color="#ffffff" />
-                            <Text style={styles.uploadingText}>AI Analyzing...</Text>
-                          </View>
-                        )}
+                        </TouchableOpacity>
                       </View>
                     </View>
-                  </CameraView>
+
+                    {/* AI Targeting Crosshair */}
+                    <View style={styles.targetReticle}>
+                      <View style={styles.reticleCrosshair}>
+                        <Text style={styles.reticleText}>ROAD DETECTION ZONE</Text>
+                      </View>
+                    </View>
+
+                    {/* Bottom Telemetry HUD */}
+                    <View style={styles.hudBottomRow}>
+                      <View style={styles.hudItem}>
+                        <Ionicons name="speedometer-outline" size={13} color="#ffffff" />
+                        <Text style={styles.hudText}>
+                          {Math.round(liveGps.speed ?? 42)} km/h
+                        </Text>
+                      </View>
+                      <View style={styles.hudItem}>
+                        <Ionicons name="navigate-outline" size={13} color="#ffffff" />
+                        <Text style={styles.hudText}>
+                          {liveGps.latitude.toFixed(4)}°, {liveGps.longitude.toFixed(4)}°
+                        </Text>
+                      </View>
+                      {isUploadingLive && (
+                        <View style={styles.uploadingPill}>
+                          <ActivityIndicator size="small" color="#ffffff" />
+                          <Text style={styles.uploadingText}>AI Analyzing...</Text>
+                        </View>
+                      )}
+                    </View>
+                  </View>
                 </View>
               )}
             </View>
@@ -696,16 +704,26 @@ const styles = StyleSheet.create({
   },
   cameraWrapper: {
     width: '100%',
-    height: 280,
+    height: 300,
+    position: 'relative',
+    overflow: 'hidden',
   },
   cameraView: {
-    flex: 1,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
   hudOverlay: {
-    flex: 1,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     justifyContent: 'space-between',
     padding: 12,
-    backgroundColor: 'rgba(0,0,0,0.2)',
+    backgroundColor: 'rgba(0,0,0,0.18)',
   },
   hudTopRow: {
     flexDirection: 'row',

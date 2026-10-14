@@ -26,11 +26,13 @@ export default function TripSummaryScreen() {
   useEffect(() => {
     async function loadTrip() {
       const storedTrips = await storage.getTrips();
-      const matched = storedTrips.find((t) => t.id === id) || storedTrips[0];
+      const validStored = (storedTrips || []).filter((t): t is Trip => Boolean(t && t.id));
+      const matched = (id ? validStored.find((t) => t?.id === id) : null) || validStored[0];
       if (matched) {
         setTrip(matched);
       } else {
-        const mock = MOCK_TRIPS.find((t) => t.id === id) || MOCK_TRIPS[0];
+        const validMocks = MOCK_TRIPS.filter((t): t is Trip => Boolean(t && t.id));
+        const mock = (id ? validMocks.find((t) => t?.id === id) : null) || validMocks[0] || null;
         setTrip(mock);
       }
     }
@@ -160,6 +162,16 @@ export default function TripSummaryScreen() {
             High-precision GPS path recorded. Ready for DBSCAN spatial hazard clustering on server.
           </Text>
         </Card>
+
+        <Button
+          title="View Road Condition on Map"
+          variant="outline"
+          size="lg"
+          fullWidth
+          icon="map-outline"
+          style={{ marginBottom: 10 }}
+          onPress={() => router.push('/(tabs)/map')}
+        />
 
         <Button
           title="Back to Home Dashboard"

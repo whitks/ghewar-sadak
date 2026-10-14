@@ -1,9 +1,9 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
-import React, { useEffect, useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, FlatList,
+  View, Text, StyleSheet, TouchableOpacity, FlatList, Alert,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Trip, MOCK_TRIPS } from '../../services/mockData';
 import { storage } from '../../services/storage';
@@ -63,14 +63,61 @@ const UPLOAD_CONFIG: Record<
 
 export default function TripsScreen() {
   const [trips, setTrips] = useState<Trip[]>(MOCK_TRIPS);
+  const [savedCount, setSavedCount] = useState(0);
 
-  useEffect(() => {
-    storage.getTrips().then((saved) => {
-      if (saved && saved.length > 0) {
-        setTrips([...saved, ...MOCK_TRIPS]);
-      }
-    });
+  const loadTrips = useCallback(async () => {
+    const saved = await storage.getTrips();
+    const validSaved = (saved || []).filter((t) => Boolean(t && t.id));
+    setSavedCount(validSaved.length);
+    const validMock = MOCK_TRIPS.filter((t) => Boolean(t && t.id));
+    if (validSaved.length > 0) {
+      setTrips([...validSaved, ...validMock]);
+    } else {
+      setTrips(validMock);
+    }
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadTrips();
+    }, [loadTrips])
+  );
+
+  const handleDeleteTrip = (tripId: string) => {
+    Alert.alert(
+      'Delete Trip',
+      'Are you sure you want to remove this trip?',
+      [
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            await storage.deleteTrip(tripId);
+            await loadTrips();
+          },
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ],
+    );
+  };
+
+  const handleClearSavedTrips = () => {
+    Alert.alert(
+      'Clear Stored Drives',
+      'Delete all your recorded trips from local storage?',
+      [
+        {
+          text: 'Clear All',
+          style: 'destructive',
+          onPress: async () => {
+            await storage.saveTrips([]);
+            await loadTrips();
+          },
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ],
+    );
+  };
 
   if (trips.length === 0) {
     return (
@@ -97,7 +144,22 @@ export default function TripsScreen() {
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
-        <Text style={styles.title}>Trip History</Text>
+        <View>
+          <Text style={styles.title}>Trip History</Text>
+          <Text style={styles.subTitle}>
+            {trips.length} drives recorded · Telemetry synchronized
+          </Text>
+        </View>
+        {savedCount > 0 && (
+          <TouchableOpacity
+            style={styles.clearBtn}
+            onPress={handleClearSavedTrips}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="trash-bin-outline" size={14} color={AppColors.danger} />
+            <Text style={styles.clearBtnText}>Clear Mine</Text>
+          </TouchableOpacity>
+        )}
       </View>
       <FlatList
         data={trips}
@@ -105,6 +167,7 @@ export default function TripsScreen() {
         contentContainerStyle={styles.list}
         renderItem={({ item }) => {
           const upload = UPLOAD_CONFIG[item.uploadStatus] || UPLOAD_CONFIG.pending;
+          const isUserSaved = !item.id.startsWith('trip-00');
           return (
             <TouchableOpacity
               style={styles.tripCard}
@@ -116,11 +179,25 @@ export default function TripsScreen() {
                   <Ionicons name="calendar-outline" size={15} color={AppColors.textSecondary} />
                   <Text style={styles.tripDate}>{formatDate(item.startTime)}</Text>
                 </View>
-                <View style={[styles.uploadBadge, { backgroundColor: upload.bg, borderColor: upload.border }]}>
-                  <Ionicons name={upload.icon} size={12} color={upload.color} style={{ marginRight: 4 }} />
-                  <Text style={[styles.uploadLabel, { color: upload.color }]}>
-                    {upload.label}
-                  </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <View style={[styles.uploadBadge, { backgroundColor: upload.bg, borderColor: upload.border }]}>
+                    <Ionicons name={upload.icon} size={12} color={upload.color} style={{ marginRight: 4 }} />
+                    <Text style={[styles.uploadLabel, { color: upload.color }]}>
+                      {upload.label}
+                    </Text>
+                  </View>
+                  {isUserSaved && (
+                    <TouchableOpacity
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      onPress={(e) => {
+                        e.stopPropagation();
+                        handleDeleteTrip(item.id);
+                      }}
+                      style={styles.deleteIconBtn}
+                    >
+                      <Ionicons name="trash-outline" size={15} color={AppColors.danger} />
+                    </TouchableOpacity>
+                  )}
                 </View>
               </View>
 
@@ -165,12 +242,42 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingTop: 16,
     paddingBottom: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   title: {
     color: AppColors.textPrimary,
     fontSize: 26,
     fontWeight: '800',
     letterSpacing: -0.5,
+  },
+  subTitle: {
+    color: AppColors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  clearBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: AppColors.cardAlt,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  clearBtnText: {
+    color: AppColors.danger,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  deleteIconBtn: {
+    padding: 4,
+    borderRadius: 6,
+    backgroundColor: AppColors.cardAlt,
   },
   list: { padding: 18, gap: 12, paddingTop: 6 },
   tripCard: {

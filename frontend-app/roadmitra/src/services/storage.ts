@@ -58,17 +58,30 @@ export const storage = {
 
   async getHazards(): Promise<Hazard[]> {
     const v = await safeGetItem(KEYS.HAZARDS);
-    return v ? JSON.parse(v) : [];
+    if (!v) return [];
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? parsed.filter((h) => Boolean(h && h.id)) : [];
+    } catch {
+      return [];
+    }
   },
 
   async saveHazards(hazards: Hazard[]): Promise<void> {
-    await safeSetItem(KEYS.HAZARDS, JSON.stringify(hazards));
+    const valid = (hazards || []).filter((h) => Boolean(h && h.id));
+    await safeSetItem(KEYS.HAZARDS, JSON.stringify(valid));
   },
 
   async addHazard(hazard: Hazard): Promise<void> {
+    if (!hazard || !hazard.id) return;
     const hazards = await storage.getHazards();
-    // Prepend new hazard
-    hazards.unshift(hazard);
+    // Update existing or prepend new
+    const existingIdx = hazards.findIndex((h) => h?.id === hazard.id);
+    if (existingIdx >= 0) {
+      hazards[existingIdx] = hazard;
+    } else {
+      hazards.unshift(hazard);
+    }
     // Keep up to 200 hazards locally
     if (hazards.length > 200) {
       hazards.length = 200;
@@ -78,17 +91,42 @@ export const storage = {
 
   async getTrips(): Promise<Trip[]> {
     const v = await safeGetItem(KEYS.TRIPS);
-    return v ? JSON.parse(v) : [];
+    if (!v) return [];
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? parsed.filter((t) => Boolean(t && t.id)) : [];
+    } catch {
+      return [];
+    }
   },
 
   async saveTrips(trips: Trip[]): Promise<void> {
-    await safeSetItem(KEYS.TRIPS, JSON.stringify(trips));
+    const valid = (trips || []).filter((t) => Boolean(t && t.id));
+    await safeSetItem(KEYS.TRIPS, JSON.stringify(valid));
   },
 
   async addTrip(trip: any): Promise<void> {
+    if (!trip || !trip.id) return;
     const trips = await storage.getTrips();
-    trips.unshift(trip);
+    const existingIdx = trips.findIndex((t) => t?.id === trip.id);
+    if (existingIdx >= 0) {
+      trips[existingIdx] = trip;
+    } else {
+      trips.unshift(trip);
+    }
     await storage.saveTrips(trips);
+  },
+
+  async deleteTrip(tripId: string): Promise<void> {
+    const trips = await storage.getTrips();
+    const updated = trips.filter((t) => t?.id !== tripId);
+    await storage.saveTrips(updated);
+  },
+
+  async deleteHazard(hazardId: string): Promise<void> {
+    const hazards = await storage.getHazards();
+    const updated = hazards.filter((h) => h?.id !== hazardId);
+    await storage.saveHazards(updated);
   },
 
   async getUploadQueue(): Promise<UploadQueueItem[]> {
