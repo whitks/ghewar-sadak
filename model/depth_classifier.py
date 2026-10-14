@@ -149,13 +149,37 @@ def estimate_depth(disp, bbox, camera_height_cm, k=1.0, mae_cm=None):
 
 
 # ------------------------------------------------------------- depth model
-def load_disparity(image_path, model_id=DEFAULT_MODEL, metric=False):
+_DEPTH_PIPE_CACHE = {}
+
+
+def get_depth_pipeline(model_id=DEFAULT_MODEL):
+    """Singleton getter to prevent reloading weights on every single frame."""
+    if model_id not in _DEPTH_PIPE_CACHE:
+        from transformers import pipeline
+        _DEPTH_PIPE_CACHE[model_id] = pipeline("depth-estimation", model=model_id)
+    return _DEPTH_PIPE_CACHE[model_id]
+
+
+def load_disparity(image_input, model_id=DEFAULT_MODEL, metric=False):
+    """
+    Computes disparity map from an image path, PIL Image, or numpy BGR/RGB array.
+    Uses cached pipeline to avoid reloading transformer weights on every keyframe.
+    """
     import torch
     from PIL import Image
-    from transformers import pipeline
 
-    img = Image.open(image_path).convert("RGB")
-    pipe = pipeline("depth-estimation", model=model_id)
+    if isinstance(image_input, Image.Image):
+        img = image_input.convert("RGB")
+    elif isinstance(image_input, np.ndarray):
+        # Convert OpenCV BGR to RGB
+        if image_input.ndim == 3 and image_input.shape[2] == 3:
+            img = Image.fromarray(image_input[:, :, ::-1])
+        else:
+            img = Image.fromarray(image_input).convert("RGB")
+    else:
+        img = Image.open(str(image_input)).convert("RGB")
+
+    pipe = get_depth_pipeline(model_id=model_id)
     out = pipe(img)["predicted_depth"]
     t = out if out.ndim == 4 else out.unsqueeze(0)
     if t.ndim == 3:

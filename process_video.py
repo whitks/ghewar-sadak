@@ -23,14 +23,17 @@ from ultralytics import YOLO
 
 # Dynamic path resolution to work from root or model/
 BASE_DIR = Path(__file__).resolve().parent
-if (BASE_DIR / "final-classification" / "best.pt").exists():
-    MODEL_PATH = BASE_DIR / "final-classification" / "best.pt"
-    OUT_DIR = BASE_DIR / "outputs"
-    DB_PATH = BASE_DIR / "potholes.db"
-else:
-    MODEL_PATH = BASE_DIR / "model" / "final-classification" / "best.pt"
-    OUT_DIR = BASE_DIR / "model" / "outputs"
-    DB_PATH = BASE_DIR / "model" / "potholes.db"
+
+# Prioritize high-accuracy YOLO26 model, falling back to legacy models
+candidates = [
+    BASE_DIR / "yolo26-experiment" / "YOLO26s_RDD_Base.pt",
+    BASE_DIR / "pothole-cv-experiment" / "best.pt",
+    BASE_DIR / "final-classification" / "best.pt",
+    BASE_DIR / "model" / "final-classification" / "best.pt",
+]
+DEFAULT_MODEL_PATH = next((p for p in candidates if p.exists()), None)
+OUT_DIR = BASE_DIR / "outputs"
+DB_PATH = BASE_DIR / "potholes.db"
 
 import sys
 sys.path.insert(0, str(BASE_DIR))
@@ -40,13 +43,15 @@ from database import init_db, insert_detection, get_all_detections
 import depth_classifier
 from map_generator import generate_map_html
 
-OUT_DIR.mkdir(exist_ok=True)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Video Pothole & Distress Processing Pipeline")
-    parser.add_argument("video", nargs="?", default="stock-footage-damaged-road-with-puddles-and-deep-potholes.webm", help="Path to input video file")
-    parser.add_argument("--conf", type=float, default=0.15, help="Confidence threshold (default: 0.15)")
+    parser.add_argument("video", nargs="?", default="sample_video.mp4", help="Path to input video file")
+    parser.add_argument("--conf", type=float, default=0.20, help="Confidence threshold (default: 0.20)")
+    parser.add_argument("--model", type=str, default=None, help="Path to custom model weights (default: auto-detect)")
+    parser.add_argument("--no-depth", action="store_true", help="Skip depth estimation for ultra-fast processing (30+ FPS)")
     parser.add_argument("--lat", type=float, default=28.6139, help="Starting GPS Latitude (default: 28.6139)")
     parser.add_argument("--lon", type=float, default=77.2090, help="Starting GPS Longitude (default: 77.2090)")
     parser.add_argument("--camera-height-cm", type=float, default=120.0, help="Camera height above road in cm (default: 120)")
@@ -93,8 +98,16 @@ def main():
     writer = cv2.VideoWriter(str(out_video_path), fourcc, fps, (width, height))
 
     # Load YOLO model
-    print(f"⏳ Loading YOLOv8 model from {MODEL_PATH}...")
-    model = YOLO(str(MODEL_PATH))
+    model_path = Path(args.model) if args.model else DEFAULT_MODEL_PATH
+    if not model_path or not model_path.exists():
+        raise FileNotFoundError(f"Model file not found at: {model_path}")
+
+    print(f"⏳ Loading YOLO model from {model_path}...")
+    model = YOLO(str(model_path))
+
+    if not args.no_depth:
+        print("⏳ Initializing Depth Engine (pre-caching weights in RAM)...")
+        depth_classifier.get_depth_pipeline()
 
     init_db(DB_PATH)
 
@@ -136,30 +149,35 @@ def main():
         frame_potholes = 0
         frame_distress = 0
 
-        # Periodic depth calculation on keyframe
-        run_depth = (frame_idx % args.depth_interval == 0 or frame_idx == 1)
+        # Periodic depth calculation on keyframe (in-memory with cached pipeline)
+        run_depth = (frame_idx % args.depth_interval == 0 or frame_idx == 1) and not args.no_depth
         disp_map = None
         if run_depth and len(boxes) > 0:
             try:
-                # Save temp frame for depth_classifier
-                temp_frame_path = OUT_DIR / "_temp_frame.jpg"
-                cv2.imwrite(str(temp_frame_path), frame)
-                disp_map = depth_classifier.load_disparity(str(temp_frame_path))
-                if temp_frame_path.exists():
-                    temp_frame_path.unlink()
+                disp_map = depth_classifier.load_disparity(frame)
             except Exception:
                 disp_map = None
 
         for b in boxes:
             cls_id = int(b.cls[0])
-            cls_name = model.names[cls_id]
             conf = float(b.conf[0])
             x1, y1, x2, y2 = [int(round(v)) for v in b.xyxy[0].tolist()]
             bw, bh = x2 - x1, y2 - y1
-
-            if cls_name.lower() == "pothole":
+            raw_name = str(model.names[cls_id])
+            if "D00" in raw_name or "pothole" in raw_name.lower():
+                cls_name = "Pothole"
                 frame_potholes += 1
+            elif "D10" in raw_name:
+                cls_name = "Longitudinal Crack"
+                frame_distress += 1
+            elif "D20" in raw_name:
+                cls_name = "Transverse Crack"
+                frame_distress += 1
+            elif "D40" in raw_name or "alligator" in raw_name.lower():
+                cls_name = "Alligator Crack"
+                frame_distress += 1
             else:
+                cls_name = raw_name
                 frame_distress += 1
 
             # Determine depth band
