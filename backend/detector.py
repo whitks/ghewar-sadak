@@ -75,6 +75,7 @@ class PotholeDetectorEngine:
         if model_path is None or not model_path.exists():
             # Check candidate model paths
             candidates = [
+                ROOT_DIR / "yolo26-experiment" / "YOLO26s_RDD_Base.pt",
                 ROOT_DIR / "pothole-cv-experiment" / "best.pt",
                 ROOT_DIR / "model" / "final-classification" / "best.pt",
                 ROOT_DIR / "final-classification" / "best.pt",
@@ -128,7 +129,17 @@ class PotholeDetectorEngine:
 
         for idx, b in enumerate(boxes, 1):
             cls_id = int(b.cls[0])
-            cls_name = self.model.names[cls_id]
+            cls_raw = str(self.model.names[cls_id])
+            if "D00" in cls_raw or "pothole" in cls_raw.lower():
+                cls_name = "Pothole"
+            elif "D10" in cls_raw:
+                cls_name = "Longitudinal Crack"
+            elif "D20" in cls_raw:
+                cls_name = "Transverse Crack"
+            elif "D40" in cls_raw or "alligator" in cls_raw.lower():
+                cls_name = "Alligator Crack"
+            else:
+                cls_name = cls_raw
             conf = float(b.conf[0])
             x1, y1, x2, y2 = [int(round(v)) for v in b.xyxy[0].tolist()]
             bw, bh = x2 - x1, y2 - y1

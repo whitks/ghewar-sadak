@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,24 +8,78 @@ import {
   Image,
   ActivityIndicator,
   Platform,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Location from 'expo-location';
 import { AppColors } from '../constants/theme';
 import { DashcamWorkflow } from '../components/DashcamWorkflow';
+import { BBoxOverlay } from '../components/BBoxOverlay';
+import { VideoAnnotator } from '../components/VideoAnnotator';
 import {
   dashcamService,
   DashcamPipelineState,
   ExtractedFrame,
 } from '../services/dashcamService';
+import { uploadDashcamFrame, GpsCoordinates, PotholeDetection, BACKEND_URL } from '../services/api';
+
+type PipelineViewMode = 'camera' | 'video_annotator' | 'simulation';
 
 export default function DashcamPipelineScreen() {
+  const [permission, requestPermission] = useCameraPermissions();
   const [pipelineState, setPipelineState] = useState<DashcamPipelineState>(
     dashcamService.getState(),
   );
+  const [viewMode, setViewMode] = useState<PipelineViewMode>('camera');
   const [activeFrameTab, setActiveFrameTab] = useState<ExtractedFrame | null>(null);
 
+  // Live Phone Camera State
+  const cameraRef = useRef<CameraView | null>(null);
+  const [facing, setFacing] = useState<'back' | 'front'>('back');
+  const [isTorchOn, setIsTorchOn] = useState(false);
+  const [isAutoCapturing, setIsAutoCapturing] = useState(false);
+  const [nextCaptureSec, setNextCaptureSec] = useState(10);
+  const [latestCapturedUri, setLatestCapturedUri] = useState<string | null>(null);
+  const [latestDetections, setLatestDetections] = useState<PotholeDetection[]>([]);
+  const [isUploadingLive, setIsUploadingLive] = useState(false);
+  const [liveGps, setLiveGps] = useState<GpsCoordinates>({
+    latitude: 28.6145,
+    longitude: 77.2094,
+    altitude: 216,
+    speed: 42.0,
+  });
+
+  // Track GPS position
+  useEffect(() => {
+    let mounted = true;
+    async function trackGps() {
+      try {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          const loc = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          });
+          if (mounted && loc?.coords) {
+            setLiveGps({
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+              altitude: loc.coords.altitude ?? 0,
+              speed: (loc.coords.speed ?? 0) * 3.6, // m/s to km/h
+            });
+          }
+        }
+      } catch {}
+    }
+    trackGps();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Subscribe to dashcamService
   useEffect(() => {
     const unsubscribe = dashcamService.subscribe((s) => {
       setPipelineState(s);
@@ -35,6 +89,76 @@ export default function DashcamPipelineScreen() {
     });
     return unsubscribe;
   }, [activeFrameTab]);
+
+  // 10-Second Auto Capture Interval for Phone Camera
+  useEffect(() => {
+    let timer: any = null;
+    if (isAutoCapturing) {
+      timer = setInterval(() => {
+        setNextCaptureSec((prev) => {
+          if (prev <= 1) {
+            // Trigger 10-second capture
+            captureAndDetectFrame();
+            return 10;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    } else {
+      setNextCaptureSec(10);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [isAutoCapturing, liveGps]);
+
+  /**
+   * Take a REAL frame from the phone's camera, upload to AI server, and display bounding boxes!
+   */
+  const captureAndDetectFrame = async () => {
+    if (!cameraRef.current) return;
+    setIsUploadingLive(true);
+
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.7,
+        skipProcessing: true,
+      });
+
+      if (photo?.uri) {
+        setLatestCapturedUri(photo.uri);
+
+        // Upload to Python backend server
+        const res = await uploadDashcamFrame(photo.uri, liveGps, 'phone_dashcam_live');
+
+        if (res?.detections) {
+          setLatestDetections(res.detections);
+
+          // Add to extracted frames
+          const newFrame: ExtractedFrame = {
+            id: `live-frame-${Date.now()}`,
+            frameIndex: pipelineState.extractedFrames.length + 1,
+            timestampSec: pipelineState.extractedFrames.length * 10,
+            timestampLabel: new Date().toLocaleTimeString(),
+            imageUri: photo.uri,
+            status: res.detections.length > 0 ? 'detected' : 'clear',
+            potholesFound: res.detections.length,
+            detections: res.detections,
+            annotatedImageUrl: res.annotated_image_url
+              ? `${BACKEND_URL}${res.annotated_image_url}`
+              : undefined,
+            gps: liveGps,
+          };
+
+          setActiveFrameTab(newFrame);
+        }
+      }
+    } catch (err: any) {
+      console.warn('Camera capture / inference error:', err);
+    } finally {
+      setIsUploadingLive(false);
+    }
+  };
 
   const handleStartSimulation = async (fastMode: boolean = false) => {
     await dashcamService.runPipelineSimulation({
@@ -46,6 +170,9 @@ export default function DashcamPipelineScreen() {
   const handleReset = () => {
     dashcamService.reset();
     setActiveFrameTab(null);
+    setLatestCapturedUri(null);
+    setLatestDetections([]);
+    setIsAutoCapturing(false);
   };
 
   const isBusy =
@@ -55,7 +182,7 @@ export default function DashcamPipelineScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
-      {/* Header */}
+      {/* Top Navigation Bar */}
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.backBtn}
@@ -66,12 +193,10 @@ export default function DashcamPipelineScreen() {
         </TouchableOpacity>
 
         <View style={styles.headerTitleBox}>
-          <Text style={styles.headerTitle}>WiFi Dashcam Pipeline</Text>
+          <Text style={styles.headerTitle}>AI Dashcam & Video Pipeline</Text>
           <View style={styles.wifiPill}>
-            <Ionicons name="wifi" size={12} color={AppColors.success} />
-            <Text style={styles.wifiPillText}>
-              {pipelineState.wifiSSID} · 192.168.1.105
-            </Text>
+            <Ionicons name="camera" size={12} color={AppColors.success} />
+            <Text style={styles.wifiPillText}>Phone Camera & 10s AI Slicing</Text>
           </View>
         </View>
 
@@ -88,346 +213,355 @@ export default function DashcamPipelineScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Animated Workflow Diagram */}
-        <DashcamWorkflow
-          currentStage={pipelineState.stage}
-          progressPercent={pipelineState.progressPercent}
-          statusMessage={pipelineState.statusMessage}
-        />
-
-        {/* Dashcam Viewfinder / Playback Player */}
-        <View style={styles.viewfinderCard}>
-          <View style={styles.viewfinderScreen}>
-            {/* Background Simulated Road View */}
-            <Image
-              source={{
-                uri: 'https://images.unsplash.com/photo-1515162816999-a0c47dc192f7?w=1000&auto=format&fit=crop&q=80',
-              }}
-              style={styles.viewfinderImage}
-              resizeMode="cover"
+        {/* Mode Switcher Tabs */}
+        <View style={styles.modeTabBar}>
+          <TouchableOpacity
+            style={[
+              styles.modeTab,
+              viewMode === 'camera' && styles.modeTabActive,
+            ]}
+            onPress={() => setViewMode('camera')}
+          >
+            <Ionicons
+              name="camera"
+              size={15}
+              color={viewMode === 'camera' ? '#ffffff' : AppColors.textPrimary}
             />
+            <Text
+              style={[
+                styles.modeTabText,
+                viewMode === 'camera' && styles.modeTabTextActive,
+              ]}
+            >
+              Phone Camera (Live)
+            </Text>
+          </TouchableOpacity>
 
-            {/* Dark overlay gradient */}
-            <View style={styles.viewfinderOverlay} />
+          <TouchableOpacity
+            style={[
+              styles.modeTab,
+              viewMode === 'video_annotator' && styles.modeTabActive,
+            ]}
+            onPress={() => setViewMode('video_annotator')}
+          >
+            <Ionicons
+              name="film"
+              size={15}
+              color={viewMode === 'video_annotator' ? '#ffffff' : AppColors.textPrimary}
+            />
+            <Text
+              style={[
+                styles.modeTabText,
+                viewMode === 'video_annotator' && styles.modeTabTextActive,
+              ]}
+            >
+              Video Annotator (All Frames)
+            </Text>
+          </TouchableOpacity>
 
-            {/* HUD Status Bar */}
-            <View style={styles.hudTopBar}>
-              <View style={styles.recBadge}>
-                <View
-                  style={[
-                    styles.recDot,
-                    pipelineState.stage === 'recording' && styles.recDotFlashing,
-                  ]}
-                />
-                <Text style={styles.recText}>
-                  {pipelineState.stage === 'recording'
-                    ? `REC 00:${String(pipelineState.elapsedRecordingSec).padStart(2, '0')} / 00:30`
-                    : pipelineState.stage === 'idle'
-                    ? 'STANDBY'
-                    : 'RECORDED (00:30)'}
-                </Text>
-              </View>
+          <TouchableOpacity
+            style={[
+              styles.modeTab,
+              viewMode === 'simulation' && styles.modeTabActive,
+            ]}
+            onPress={() => setViewMode('simulation')}
+          >
+            <Ionicons
+              name="play-forward"
+              size={15}
+              color={viewMode === 'simulation' ? '#ffffff' : AppColors.textPrimary}
+            />
+            <Text
+              style={[
+                styles.modeTabText,
+                viewMode === 'simulation' && styles.modeTabTextActive,
+              ]}
+            >
+              Simulation
+            </Text>
+          </TouchableOpacity>
+        </View>
 
-              <View style={styles.hudSpecs}>
-                <Text style={styles.hudSpecsText}>1080p 30FPS · H.265</Text>
-              </View>
+        {/* ── MODE 1: PHONE CAMERA DASHCAM ──────────────────────────────── */}
+        {viewMode === 'camera' && (
+          <View style={styles.sectionContainer}>
+            {/* Camera Viewfinder Card */}
+            <View style={styles.cameraCard}>
+              {!permission?.granted ? (
+                // Camera Permission Prompt
+                <View style={styles.permissionBox}>
+                  <Ionicons name="camera-reverse-outline" size={48} color={AppColors.primary} />
+                  <Text style={styles.permissionTitle}>Phone Camera Access</Text>
+                  <Text style={styles.permissionDesc}>
+                    Mount your phone on your car dashboard. RoadMitra will use your camera to
+                    capture frames and detect potholes every 10 seconds.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.grantPermissionBtn}
+                    onPress={requestPermission}
+                  >
+                    <Ionicons name="shield-checkmark" size={18} color="#ffffff" />
+                    <Text style={styles.grantPermissionText}>Enable Phone Camera</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                // Live Phone Camera View
+                <View style={styles.cameraWrapper}>
+                  <CameraView
+                    ref={cameraRef}
+                    style={styles.cameraView}
+                    facing={facing}
+                    enableTorch={isTorchOn}
+                  >
+                    {/* Viewfinder HUD Overlay */}
+                    <View style={styles.hudOverlay}>
+                      {/* Top Bar */}
+                      <View style={styles.hudTopRow}>
+                        <View style={styles.liveRecPill}>
+                          <View
+                            style={[
+                              styles.liveRecDot,
+                              isAutoCapturing && styles.liveRecDotBlinking,
+                            ]}
+                          />
+                          <Text style={styles.liveRecText}>
+                            {isAutoCapturing
+                              ? `DASHCAM MODE: NEXT IN ${nextCaptureSec}s`
+                              : 'PHONE CAMERA READY'}
+                          </Text>
+                        </View>
+
+                        <View style={styles.cameraToolBtns}>
+                          <TouchableOpacity
+                            style={styles.toolBtn}
+                            onPress={() =>
+                              setFacing((f) => (f === 'back' ? 'front' : 'back'))
+                            }
+                          >
+                            <Ionicons name="camera-reverse" size={16} color="#ffffff" />
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.toolBtn}
+                            onPress={() => setIsTorchOn((t) => !t)}
+                          >
+                            <Ionicons
+                              name={isTorchOn ? 'flash' : 'flash-off'}
+                              size={16}
+                              color={isTorchOn ? AppColors.secondary : '#ffffff'}
+                            />
+                          </TouchableOpacity>
+                        </View>
+                      </View>
+
+                      {/* AI Targeting Crosshair */}
+                      <View style={styles.targetReticle}>
+                        <View style={styles.reticleCrosshair}>
+                          <Text style={styles.reticleText}>ROAD DETECTION ZONE</Text>
+                        </View>
+                      </View>
+
+                      {/* Bottom Telemetry HUD */}
+                      <View style={styles.hudBottomRow}>
+                        <View style={styles.hudItem}>
+                          <Ionicons name="speedometer-outline" size={13} color="#ffffff" />
+                          <Text style={styles.hudText}>
+                            {Math.round(liveGps.speed ?? 42)} km/h
+                          </Text>
+                        </View>
+                        <View style={styles.hudItem}>
+                          <Ionicons name="navigate-outline" size={13} color="#ffffff" />
+                          <Text style={styles.hudText}>
+                            {liveGps.latitude.toFixed(4)}°, {liveGps.longitude.toFixed(4)}°
+                          </Text>
+                        </View>
+                        {isUploadingLive && (
+                          <View style={styles.uploadingPill}>
+                            <ActivityIndicator size="small" color="#ffffff" />
+                            <Text style={styles.uploadingText}>AI Analyzing...</Text>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  </CameraView>
+                </View>
+              )}
             </View>
 
-            {/* AI HUD Target Reticle (Simulating real-time AI scan) */}
-            {pipelineState.stage === 'detecting' && (
-              <View style={styles.reticleBox}>
-                <View style={styles.reticleBorder}>
-                  <Text style={styles.reticleLabel}>AI SCANNING 10s KEYFRAME</Text>
-                </View>
+            {/* Live Camera Controls */}
+            {permission?.granted && (
+              <View style={styles.cameraControlsRow}>
+                {/* 10-Second Auto Capture Toggle */}
+                <TouchableOpacity
+                  style={[
+                    styles.autoDashcamBtn,
+                    isAutoCapturing && styles.autoDashcamBtnActive,
+                  ]}
+                  onPress={() => setIsAutoCapturing((prev) => !prev)}
+                >
+                  <Ionicons
+                    name={isAutoCapturing ? 'pause-circle' : 'play-circle'}
+                    size={22}
+                    color="#ffffff"
+                  />
+                  <Text style={styles.autoDashcamBtnText}>
+                    {isAutoCapturing
+                      ? `Stop Auto 10s Mode (Next: ${nextCaptureSec}s)`
+                      : 'Start Auto 10s Dashcam Drive Mode'}
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Instant Snap Button */}
+                <TouchableOpacity
+                  style={styles.snapNowBtn}
+                  onPress={captureAndDetectFrame}
+                  disabled={isUploadingLive}
+                >
+                  <Ionicons name="camera" size={18} color={AppColors.primary} />
+                  <Text style={styles.snapNowBtnText}>Snap & Detect Now</Text>
+                </TouchableOpacity>
               </View>
             )}
 
-            {/* HUD Bottom Telemetry */}
-            <View style={styles.hudBottomBar}>
-              <View style={styles.hudTelemetryItem}>
-                <Ionicons name="speedometer-outline" size={14} color="#ffffff" />
-                <Text style={styles.hudTelemetryText}>42.5 km/h</Text>
-              </View>
-              <View style={styles.hudTelemetryItem}>
-                <Ionicons name="navigate-outline" size={14} color="#ffffff" />
-                <Text style={styles.hudTelemetryText}>28.6145° N, 77.2094° E</Text>
-              </View>
-              <View style={styles.hudTelemetryItem}>
-                <Ionicons name="battery-charging-outline" size={14} color="#ffffff" />
-                <Text style={styles.hudTelemetryText}>94%</Text>
-              </View>
-            </View>
-          </View>
-        </View>
+            {/* Image Bounding Box Visualizer for Phone Camera Frame */}
+            {latestCapturedUri && (
+              <View style={styles.detectionResultCard}>
+                <View style={styles.detectionHeader}>
+                  <Ionicons name="scan-circle" size={20} color={AppColors.accent} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.detectionTitle}>
+                      Real Camera Frame & AI Bounding Boxes
+                    </Text>
+                    <Text style={styles.detectionSubtitle}>
+                      {latestDetections.length > 0
+                        ? `Found ${latestDetections.length} road defect(s)`
+                        : 'Road surface clean · No potholes detected'}
+                    </Text>
+                  </View>
+                </View>
 
-        {/* Action Controls */}
-        <View style={styles.controlsCard}>
-          {pipelineState.stage === 'idle' && (
-            <View style={styles.actionButtonsCol}>
+                {/* Bounding Box Visualizer Component */}
+                <BBoxOverlay
+                  imageUri={latestCapturedUri}
+                  detections={latestDetections}
+                />
+
+                {/* Detections Detail Badges */}
+                {latestDetections.length > 0 && (
+                  <View style={styles.bboxesDetailList}>
+                    {latestDetections.map((d, i) => (
+                      <View key={i} style={styles.bboxDetailCard}>
+                        <View style={styles.bboxTagBadge}>
+                          <Text style={styles.bboxTagText}>#{i + 1}</Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.bboxClassText}>
+                            {d.class_name} · {(d.confidence * 100).toFixed(1)}% Conf
+                          </Text>
+                          <Text style={styles.bboxSubText}>
+                            Depth: {d.estimated_depth_cm} cm · Severity: {d.severity} ({d.repair_urgency})
+                          </Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* ── MODE 2: FULL VIDEO ANNOTATOR (ALL FRAMES) ─────────────────── */}
+        {viewMode === 'video_annotator' && (
+          <View style={styles.sectionContainer}>
+            <VideoAnnotator />
+          </View>
+        )}
+
+        {/* ── MODE 3: AUTOMATED PIPELINE SIMULATION ──────────────────────── */}
+        {viewMode === 'simulation' && (
+          <View style={styles.sectionContainer}>
+            {/* Animated Workflow Component */}
+            <DashcamWorkflow
+              currentStage={pipelineState.stage}
+              progressPercent={pipelineState.progressPercent}
+              statusMessage={pipelineState.statusMessage}
+            />
+
+            {/* Simulation Controls */}
+            <View style={styles.simControlsCard}>
               <TouchableOpacity
-                style={styles.primaryActionBtn}
+                style={styles.simPrimaryBtn}
                 onPress={() => handleStartSimulation(false)}
-                activeOpacity={0.85}
+                disabled={isBusy}
               >
                 <Ionicons name="play-circle" size={20} color="#ffffff" />
-                <Text style={styles.primaryActionText}>
-                  Start 30s Dashcam Drive (Auto 10s Extraction)
+                <Text style={styles.simPrimaryText}>
+                  Start 30s Simulated Drive (Auto 10s Extraction)
                 </Text>
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={styles.secondaryActionBtn}
+                style={styles.simFastBtn}
                 onPress={() => handleStartSimulation(true)}
-                activeOpacity={0.85}
+                disabled={isBusy}
               >
-                <Ionicons name="flash" size={18} color={AppColors.primary} />
-                <Text style={styles.secondaryActionText}>
-                  Instant 10s Simulation (Fast Test)
-                </Text>
+                <Ionicons name="flash" size={16} color={AppColors.primary} />
+                <Text style={styles.simFastText}>Fast Simulation (3-Second Test)</Text>
               </TouchableOpacity>
             </View>
-          )}
 
-          {pipelineState.stage === 'recording' && (
-            <View style={styles.recordingStatusBox}>
-              <ActivityIndicator size="small" color={AppColors.accent} />
-              <Text style={styles.recordingStatusText}>
-                Recording continuous road video... Automatically extracts frames every 10s
-                when done!
-              </Text>
-            </View>
-          )}
-
-          {(pipelineState.stage === 'extracting' ||
-            pipelineState.stage === 'detecting') && (
-            <View style={styles.processingStatusBox}>
-              <ActivityIndicator size="small" color={AppColors.primary} />
-              <Text style={styles.processingStatusText}>
-                {pipelineState.statusMessage}
-              </Text>
-            </View>
-          )}
-
-          {pipelineState.stage === 'completed' && (
-            <View style={styles.completedActions}>
-              <View style={styles.completedBanner}>
-                <Ionicons name="checkmark-circle" size={24} color={AppColors.success} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.completedBannerTitle}>
-                    Pipeline Completed Successfully!
-                  </Text>
-                  <Text style={styles.completedBannerSubtitle}>
-                    {pipelineState.stats.totalPotholesFound} road defects registered to
-                    GIS Database & Synced with Map
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.completedBtnRow}>
-                <TouchableOpacity
-                  style={styles.mapActionBtn}
-                  onPress={() => router.push('/(tabs)/map')}
-                >
-                  <Ionicons name="map" size={18} color="#ffffff" />
-                  <Text style={styles.mapActionText}>View on Interactive Map</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.replayActionBtn}
-                  onPress={() => handleStartSimulation(true)}
-                >
-                  <Ionicons name="repeat" size={18} color={AppColors.primary} />
-                  <Text style={styles.replayActionText}>Run Again</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-        </View>
-
-        {/* Extracted 10-Second Keyframes Gallery */}
-        {pipelineState.extractedFrames.length > 0 && (
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View>
-                <Text style={styles.sectionTitle}>
-                  Extracted Frames (Every 10 Seconds)
+            {/* Extracted 10-Second Frames */}
+            {pipelineState.extractedFrames.length > 0 && (
+              <View style={styles.extractedSection}>
+                <Text style={styles.extractedTitle}>
+                  Extracted 10s Keyframes ({pipelineState.extractedFrames.length})
                 </Text>
-                <Text style={styles.sectionSubtitle}>
-                  Only these keyframes were uploaded to the AI server
-                </Text>
-              </View>
-              <View style={styles.frameCounterBadge}>
-                <Text style={styles.frameCounterText}>
-                  {pipelineState.extractedFrames.length} Frames
-                </Text>
-              </View>
-            </View>
-
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.framesScrollView}
-            >
-              {pipelineState.extractedFrames.map((frame, idx) => {
-                const isSelected = activeFrameTab?.id === frame.id;
-                const hasDetections = frame.detections.length > 0;
-
-                return (
-                  <TouchableOpacity
-                    key={frame.id}
-                    style={[
-                      styles.frameCard,
-                      isSelected && styles.frameCardSelected,
-                      hasDetections && styles.frameCardHazard,
-                    ]}
-                    onPress={() => setActiveFrameTab(frame)}
-                    activeOpacity={0.85}
-                  >
-                    <Image
-                      source={{ uri: frame.imageUri }}
-                      style={styles.frameThumbnail}
-                    />
-
-                    {/* Timestamp Tag */}
-                    <View style={styles.frameTimeBadge}>
-                      <Ionicons name="time-outline" size={10} color="#ffffff" />
-                      <Text style={styles.frameTimeText}>{frame.timestampLabel}</Text>
-                    </View>
-
-                    {/* Status Pill */}
-                    <View
+                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                  {pipelineState.extractedFrames.map((frame) => (
+                    <TouchableOpacity
+                      key={frame.id}
                       style={[
-                        styles.frameStatusPill,
-                        hasDetections
-                          ? styles.statusPillHazard
-                          : styles.statusPillClear,
+                        styles.frameThumbCard,
+                        activeFrameTab?.id === frame.id && styles.frameThumbActive,
                       ]}
+                      onPress={() => setActiveFrameTab(frame)}
                     >
-                      <Ionicons
-                        name={
-                          hasDetections ? 'alert-circle' : 'checkmark-circle'
-                        }
-                        size={12}
-                        color={
-                          hasDetections ? AppColors.accent : AppColors.success
-                        }
+                      <Image
+                        source={{ uri: frame.imageUri }}
+                        style={styles.frameThumbImg}
                       />
-                      <Text
-                        style={[
-                          styles.frameStatusText,
-                          {
-                            color: hasDetections
-                              ? AppColors.accent
-                              : AppColors.success,
-                          },
-                        ]}
-                      >
-                        {hasDetections
-                          ? `${frame.detections[0].class_name} (${Math.round(
-                              frame.detections[0].confidence * 100,
-                            )}%)`
-                          : 'Clear Road'}
-                      </Text>
-                    </View>
-
-                    {/* Depth info if detected */}
-                    {hasDetections && (
-                      <View style={styles.depthTagRow}>
-                        <Text style={styles.depthTagText}>
-                          Depth: {frame.detections[0].estimated_depth_cm}cm ·{' '}
-                          {frame.detections[0].severity}
+                      <View style={styles.frameThumbBadge}>
+                        <Text style={styles.frameThumbBadgeText}>
+                          {frame.timestampLabel}
                         </Text>
                       </View>
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
-        )}
-
-        {/* Selected Frame Detailed Inspector */}
-        {activeFrameTab && activeFrameTab.detections.length > 0 && (
-          <View style={styles.inspectorCard}>
-            <View style={styles.inspectorHeader}>
-              <View style={styles.inspectorTitleRow}>
-                <Ionicons name="scan-circle" size={20} color={AppColors.accent} />
-                <Text style={styles.inspectorTitle}>
-                  AI Detection on Frame @ {activeFrameTab.timestampLabel}
-                </Text>
-              </View>
-              <View style={styles.latencyBadge}>
-                <Text style={styles.latencyText}>
-                  Latency: {activeFrameTab.latencyMs ?? 184} ms
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.inspectorBody}>
-              {activeFrameTab.detections.map((d, i) => (
-                <View key={i} style={styles.defectDetailRow}>
-                  <View style={styles.defectIconBox}>
-                    <Ionicons
-                      name="warning"
-                      size={18}
-                      color={
-                        d.severity === 'Critical'
-                          ? AppColors.danger
-                          : AppColors.accentOrange
-                      }
-                    />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <View style={styles.defectHeaderLine}>
-                      <Text style={styles.defectClassText}>{d.class_name}</Text>
-                      <Text style={styles.defectConfText}>
-                        Confidence: {(d.confidence * 100).toFixed(1)}%
+                      <Text style={styles.frameThumbStatus}>
+                        {frame.detections.length > 0
+                          ? `⚠️ ${frame.detections[0].class_name} (${Math.round(
+                              frame.detections[0].confidence * 100,
+                            )}%)`
+                          : '✓ Clear'}
                       </Text>
-                    </View>
-                    <Text style={styles.defectSubText}>
-                      Estimated Depth: {d.estimated_depth_cm} cm · Severity: {d.severity} ·{' '}
-                      {d.repair_urgency}
-                    </Text>
-                    <Text style={styles.defectGpsText}>
-                      GPS: {activeFrameTab.gps.latitude.toFixed(6)}° N,{' '}
-                      {activeFrameTab.gps.longitude.toFixed(6)}° E
-                    </Text>
-                  </View>
-                </View>
-              ))}
-            </View>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+
+            {/* Active Selected Frame with Bounding Boxes */}
+            {activeFrameTab && (
+              <View style={styles.inspectionCard}>
+                <Text style={styles.inspectionTitle}>
+                  Bounding Box Inspector @ {activeFrameTab.timestampLabel}
+                </Text>
+                <BBoxOverlay
+                  imageUri={activeFrameTab.imageUri}
+                  detections={activeFrameTab.detections}
+                />
+              </View>
+            )}
           </View>
         )}
-
-        {/* Real-time Streaming Activity Log */}
-        <View style={styles.terminalCard}>
-          <View style={styles.terminalHeader}>
-            <Ionicons name="terminal-outline" size={16} color={AppColors.surface} />
-            <Text style={styles.terminalTitle}>Pipeline Activity Stream</Text>
-            <View style={styles.terminalDot} />
-          </View>
-
-          <View style={styles.terminalContent}>
-            {pipelineState.logs.slice(0, 8).map((log) => (
-              <View key={log.id} style={styles.logRow}>
-                <Text style={styles.logTime}>{log.timestamp}</Text>
-                <Text
-                  style={[
-                    styles.logTag,
-                    log.level === 'warn' && styles.logTagWarn,
-                    log.level === 'success' && styles.logTagSuccess,
-                    log.level === 'error' && styles.logTagError,
-                  ]}
-                >
-                  [{log.tag}]
-                </Text>
-                <Text style={styles.logMessage} numberOfLines={2}>
-                  {log.message}
-                </Text>
-              </View>
-            ))}
-          </View>
-        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -460,7 +594,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   headerTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '800',
     color: AppColors.textPrimary,
   },
@@ -488,125 +622,188 @@ const styles = StyleSheet.create({
     gap: 14,
     paddingBottom: 40,
   },
-  viewfinderCard: {
+  modeTabBar: {
+    flexDirection: 'row',
+    backgroundColor: AppColors.cardAlt,
+    borderRadius: 14,
+    padding: 4,
+    gap: 4,
+  },
+  modeTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    borderRadius: 10,
+    gap: 4,
+  },
+  modeTabActive: {
+    backgroundColor: AppColors.primary,
+  },
+  modeTabText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: AppColors.textPrimary,
+  },
+  modeTabTextActive: {
+    color: '#ffffff',
+  },
+  sectionContainer: {
+    gap: 14,
+  },
+  cameraCard: {
     borderRadius: 20,
     overflow: 'hidden',
     backgroundColor: '#000000',
-    shadowColor: AppColors.shadow,
-    shadowOpacity: 0.15,
-    shadowRadius: 10,
-    elevation: 3,
+    borderWidth: 1.5,
+    borderColor: AppColors.border,
+    minHeight: 280,
   },
-  viewfinderScreen: {
-    height: 200,
-    position: 'relative',
+  permissionBox: {
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    backgroundColor: AppColors.surface,
+  },
+  permissionTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: AppColors.textPrimary,
+  },
+  permissionDesc: {
+    fontSize: 12,
+    color: AppColors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  grantPermissionBtn: {
+    backgroundColor: AppColors.primary,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 4,
+  },
+  grantPermissionText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  cameraWrapper: {
+    width: '100%',
+    height: 280,
+  },
+  cameraView: {
+    flex: 1,
+  },
+  hudOverlay: {
+    flex: 1,
     justifyContent: 'space-between',
     padding: 12,
+    backgroundColor: 'rgba(0,0,0,0.2)',
   },
-  viewfinderImage: {
-    ...StyleSheet.absoluteFill,
-  },
-  viewfinderOverlay: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(0, 0, 0, 0.35)',
-  },
-  hudTopBar: {
+  hudTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    zIndex: 2,
   },
-  recBadge: {
+  liveRecPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    backgroundColor: 'rgba(0,0,0,0.65)',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 8,
     gap: 6,
   },
-  recDot: {
+  liveRecDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: AppColors.textMuted,
+    backgroundColor: AppColors.success,
   },
-  recDotFlashing: {
+  liveRecDotBlinking: {
     backgroundColor: AppColors.accent,
   },
-  recText: {
+  liveRecText: {
     color: '#ffffff',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
-  hudSpecs: {
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
+  cameraToolBtns: {
+    flexDirection: 'row',
+    gap: 8,
   },
-  hudSpecsText: {
-    color: '#ffffff',
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  reticleBox: {
-    position: 'absolute',
-    top: 50,
-    left: 40,
-    right: 40,
-    bottom: 50,
+  toolBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(0,0,0,0.6)',
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 2,
   },
-  reticleBorder: {
+  targetReticle: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reticleCrosshair: {
     borderWidth: 2,
-    borderColor: AppColors.accent,
+    borderColor: 'rgba(255, 255, 255, 0.7)',
     borderStyle: 'dashed',
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    backgroundColor: 'rgba(225, 29, 72, 0.15)',
+    borderRadius: 14,
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    backgroundColor: 'rgba(0,0,0,0.25)',
   },
-  reticleLabel: {
+  reticleText: {
     color: '#ffffff',
     fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 0.8,
+    letterSpacing: 0.6,
   },
-  hudBottomBar: {
+  hudBottomRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(0,0,0,0.65)',
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 10,
-    zIndex: 2,
   },
-  hudTelemetryItem: {
+  hudItem: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
   },
-  hudTelemetryText: {
+  hudText: {
     color: '#ffffff',
     fontSize: 10,
     fontWeight: '700',
   },
-  controlsCard: {
-    backgroundColor: AppColors.surface,
-    borderRadius: 18,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: AppColors.border,
+  uploadingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: AppColors.accent,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
   },
-  actionButtonsCol: {
+  uploadingText: {
+    color: '#ffffff',
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  cameraControlsRow: {
     gap: 10,
   },
-  primaryActionBtn: {
+  autoDashcamBtn: {
     backgroundColor: AppColors.primary,
     borderRadius: 14,
     paddingVertical: 14,
@@ -616,16 +813,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
   },
-  primaryActionText: {
+  autoDashcamBtnActive: {
+    backgroundColor: AppColors.accent,
+  },
+  autoDashcamBtnText: {
     color: '#ffffff',
     fontSize: 13,
     fontWeight: '800',
   },
-  secondaryActionBtn: {
+  snapNowBtn: {
     backgroundColor: AppColors.cardAlt,
     borderRadius: 14,
     paddingVertical: 12,
-    paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -633,324 +832,160 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: AppColors.border,
   },
-  secondaryActionText: {
+  snapNowBtnText: {
     color: AppColors.primary,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  recordingStatusBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 6,
-  },
-  recordingStatusText: {
-    color: AppColors.textPrimary,
     fontSize: 12,
     fontWeight: '700',
-    flex: 1,
   },
-  processingStatusBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 6,
-  },
-  processingStatusText: {
-    color: AppColors.textPrimary,
-    fontSize: 12,
-    fontWeight: '700',
-    flex: 1,
-  },
-  completedActions: {
+  detectionResultCard: {
+    backgroundColor: AppColors.surface,
+    borderRadius: 18,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: AppColors.border,
     gap: 12,
   },
-  completedBanner: {
+  detectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    backgroundColor: AppColors.successBg,
-    padding: 12,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: AppColors.successBorder,
+    gap: 8,
   },
-  completedBannerTitle: {
-    color: AppColors.success,
+  detectionTitle: {
     fontSize: 13,
-    fontWeight: '800',
-  },
-  completedBannerSubtitle: {
-    color: AppColors.textSecondary,
-    fontSize: 11,
-    marginTop: 2,
-  },
-  completedBtnRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  mapActionBtn: {
-    flex: 2,
-    backgroundColor: AppColors.primary,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  mapActionText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  replayActionBtn: {
-    flex: 1,
-    backgroundColor: AppColors.cardAlt,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    borderWidth: 1,
-    borderColor: AppColors.border,
-  },
-  replayActionText: {
-    color: AppColors.primary,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  section: {
-    gap: 10,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  sectionTitle: {
-    fontSize: 14,
     fontWeight: '800',
     color: AppColors.textPrimary,
   },
-  sectionSubtitle: {
+  detectionSubtitle: {
     fontSize: 11,
     color: AppColors.textSecondary,
-    marginTop: 1,
   },
-  frameCounterBadge: {
-    backgroundColor: AppColors.secondary,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+  bboxesDetailList: {
+    gap: 8,
+  },
+  bboxDetailCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: AppColors.cardMuted,
+    padding: 10,
     borderRadius: 10,
   },
-  frameCounterText: {
+  bboxTagBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: AppColors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bboxTagText: {
+    color: '#ffffff',
     fontSize: 10,
     fontWeight: '800',
-    color: AppColors.primary,
   },
-  framesScrollView: {
-    gap: 12,
-    paddingVertical: 4,
+  bboxClassText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: AppColors.textPrimary,
   },
-  frameCard: {
-    width: 170,
+  bboxSubText: {
+    fontSize: 10,
+    color: AppColors.textSecondary,
+    marginTop: 2,
+  },
+  simControlsCard: {
     backgroundColor: AppColors.surface,
     borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+    gap: 8,
+  },
+  simPrimaryBtn: {
+    backgroundColor: AppColors.primary,
+    borderRadius: 12,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  simPrimaryText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  simFastBtn: {
+    backgroundColor: AppColors.cardAlt,
+    borderRadius: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  simFastText: {
+    color: AppColors.primary,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  extractedSection: {
+    gap: 8,
+  },
+  extractedTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: AppColors.textPrimary,
+  },
+  frameThumbCard: {
+    width: 140,
+    backgroundColor: AppColors.surface,
+    borderRadius: 12,
     overflow: 'hidden',
     borderWidth: 1.5,
     borderColor: AppColors.border,
+    marginRight: 10,
   },
-  frameCardSelected: {
+  frameThumbActive: {
     borderColor: AppColors.primary,
   },
-  frameCardHazard: {
-    borderColor: AppColors.accent,
-  },
-  frameThumbnail: {
+  frameThumbImg: {
     width: '100%',
-    height: 96,
+    height: 80,
   },
-  frameTimeBadge: {
+  frameThumbBadge: {
     position: 'absolute',
-    top: 6,
-    left: 6,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    top: 4,
+    left: 4,
+    backgroundColor: 'rgba(0,0,0,0.7)',
     paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
+    borderRadius: 4,
   },
-  frameTimeText: {
+  frameThumbBadgeText: {
     color: '#ffffff',
     fontSize: 9,
     fontWeight: '800',
   },
-  frameStatusPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  statusPillHazard: {
-    backgroundColor: AppColors.dangerBg,
-  },
-  statusPillClear: {
-    backgroundColor: AppColors.successBg,
-  },
-  frameStatusText: {
+  frameThumbStatus: {
     fontSize: 10,
-    fontWeight: '800',
+    fontWeight: '700',
+    padding: 6,
+    color: AppColors.textPrimary,
   },
-  depthTagRow: {
-    paddingHorizontal: 8,
-    paddingBottom: 6,
-  },
-  depthTagText: {
-    fontSize: 9,
-    color: AppColors.textSecondary,
-    fontWeight: '600',
-  },
-  inspectorCard: {
+  inspectionCard: {
     backgroundColor: AppColors.surface,
-    borderRadius: 18,
+    borderRadius: 16,
     padding: 14,
     borderWidth: 1,
     borderColor: AppColors.border,
     gap: 10,
   },
-  inspectorHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  inspectorTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  inspectorTitle: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: AppColors.textPrimary,
-  },
-  latencyBadge: {
-    backgroundColor: AppColors.cardAlt,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  latencyText: {
-    fontSize: 9,
-    fontWeight: '700',
-    color: AppColors.textSecondary,
-  },
-  inspectorBody: {
-    gap: 8,
-  },
-  defectDetailRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    backgroundColor: AppColors.cardMuted,
-    padding: 10,
-    borderRadius: 12,
-  },
-  defectIconBox: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: AppColors.dangerBg,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  defectHeaderLine: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  defectClassText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: AppColors.textPrimary,
-  },
-  defectConfText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: AppColors.accent,
-  },
-  defectSubText: {
-    fontSize: 11,
-    color: AppColors.textSecondary,
-    marginTop: 2,
-  },
-  defectGpsText: {
-    fontSize: 10,
-    color: AppColors.textMuted,
-    marginTop: 2,
-  },
-  terminalCard: {
-    backgroundColor: AppColors.primary,
-    borderRadius: 18,
-    padding: 14,
-    gap: 10,
-  },
-  terminalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  terminalTitle: {
-    color: AppColors.surface,
+  inspectionTitle: {
     fontSize: 12,
     fontWeight: '800',
-    letterSpacing: 0.3,
-    flex: 1,
-  },
-  terminalDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: AppColors.secondary,
-  },
-  terminalContent: {
-    gap: 6,
-  },
-  logRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 6,
-  },
-  logTime: {
-    color: AppColors.secondary,
-    fontSize: 9,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  logTag: {
-    color: '#86efac',
-    fontSize: 9,
-    fontWeight: '800',
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  logTagWarn: {
-    color: '#fde047',
-  },
-  logTagSuccess: {
-    color: '#86efac',
-  },
-  logTagError: {
-    color: '#fca5a5',
-  },
-  logMessage: {
-    color: '#e2e8f0',
-    fontSize: 10,
-    flex: 1,
-    lineHeight: 14,
+    color: AppColors.textPrimary,
   },
 });
