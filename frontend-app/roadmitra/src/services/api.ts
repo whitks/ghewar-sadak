@@ -157,7 +157,8 @@ export async function uploadDashcamFrame(
   gps: GpsCoordinates,
   deviceId: string = 'mobile_dashcam_01',
   model: string = 'fast',
-  conf: number = 0.15
+  conf: number = 0.15,
+  runDepth: boolean = false
 ): Promise<UploadFrameResponse> {
   const uploadUrl = buildUrl(activeBackendUrl, '/api/upload-frame');
 
@@ -231,7 +232,7 @@ export async function uploadDashcamFrame(
             timestamp: new Date().toISOString(),
             model,
             conf: conf.toString(),
-            run_depth: 'true',
+            run_depth: runDepth ? 'true' : 'false',
           },
           headers: {
             Accept: 'application/json',
@@ -241,7 +242,14 @@ export async function uploadDashcamFrame(
 
         if (uploadResult.status >= 200 && uploadResult.status < 300) {
           _backoffReset();
-          return JSON.parse(uploadResult.body);
+          const parsed: UploadFrameResponse = JSON.parse(uploadResult.body);
+          if (parsed.annotated_image_url && parsed.annotated_image_url.startsWith('/')) {
+            parsed.annotated_image_url = buildUrl(activeBackendUrl, parsed.annotated_image_url);
+          }
+          if (parsed.raw_image_url && parsed.raw_image_url.startsWith('/')) {
+            parsed.raw_image_url = buildUrl(activeBackendUrl, parsed.raw_image_url);
+          }
+          return parsed;
         }
         // 5xx from Render → trigger backoff, not a per-call WARN
         if (uploadResult.status >= 500) {
@@ -269,7 +277,7 @@ export async function uploadDashcamFrame(
       formData.append('timestamp', new Date().toISOString());
       formData.append('model', model);
       formData.append('conf', conf.toString());
-      formData.append('run_depth', 'true');
+      formData.append('run_depth', runDepth ? 'true' : 'false');
 
       const response = await fetch(uploadUrl, {
         method: 'POST',
@@ -282,7 +290,14 @@ export async function uploadDashcamFrame(
 
       if (response.ok) {
         _backoffReset();
-        return await response.json();
+        const parsed: UploadFrameResponse = await response.json();
+        if (parsed.annotated_image_url && parsed.annotated_image_url.startsWith('/')) {
+          parsed.annotated_image_url = buildUrl(activeBackendUrl, parsed.annotated_image_url);
+        }
+        if (parsed.raw_image_url && parsed.raw_image_url.startsWith('/')) {
+          parsed.raw_image_url = buildUrl(activeBackendUrl, parsed.raw_image_url);
+        }
+        return parsed;
       }
       // 5xx → backoff; 4xx → let it surface normally
       if (response.status >= 500) {
@@ -342,7 +357,11 @@ export async function annotateFrame(
       });
 
       if (uploadResult.status >= 200 && uploadResult.status < 300) {
-        return JSON.parse(uploadResult.body);
+        const parsed = JSON.parse(uploadResult.body);
+        if (parsed.annotated_image_url && parsed.annotated_image_url.startsWith('/')) {
+          parsed.annotated_image_url = buildUrl(activeBackendUrl, parsed.annotated_image_url);
+        }
+        return parsed;
       }
       throw new Error(`Annotate failed (${uploadResult.status}): ${uploadResult.body}`);
     } else {
@@ -364,7 +383,11 @@ export async function annotateFrame(
       });
 
       if (res.ok) {
-        return await res.json();
+        const parsed = await res.json();
+        if (parsed.annotated_image_url && parsed.annotated_image_url.startsWith('/')) {
+          parsed.annotated_image_url = buildUrl(activeBackendUrl, parsed.annotated_image_url);
+        }
+        return parsed;
       }
       throw new Error(`Annotate failed (${res.status})`);
     }

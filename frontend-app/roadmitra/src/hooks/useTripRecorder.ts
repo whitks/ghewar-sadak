@@ -46,7 +46,9 @@ export function useTripRecorder() {
     lastPatch: telemetry.lastPatch,
     currentTripId: telemetry.currentTrip?.id ?? null,
     currentTrip: telemetry.currentTrip,
+    images: telemetry.images ?? telemetry.currentTrip?.images ?? [],
     distanceKm: telemetry.currentTrip?.distanceKm ?? 0,
+    addTripImage: (img: any) => tripRecorderService.addTripImage(img),
     startTrip,
     stopTrip,
   };

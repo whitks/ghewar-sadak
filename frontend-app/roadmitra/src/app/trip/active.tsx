@@ -10,6 +10,7 @@ import {
   Alert,
   ActivityIndicator,
   ScrollView,
+  Modal,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -17,6 +18,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { useTripRecorder } from '../../hooks/useTripRecorder';
+import { tripRecorderService } from '../../services/tripRecorder';
 import { storage } from '../../services/storage';
 import { AppColors } from '../../constants/theme';
 import { Button } from '../../components/ui/Button';
@@ -53,11 +55,13 @@ export default function ActiveTripScreen() {
     lastJolt,
     lastPatch,
     currentTripId,
+    images,
     stopTrip,
   } = useTripRecorder();
 
   const [snappedPhoto, setSnappedPhoto] = useState<string | null>(null);
   const [annotatedPhotoUrl, setAnnotatedPhotoUrl] = useState<string | null>(null);
+  const [selectedPreviewImage, setSelectedPreviewImage] = useState<string | null>(null);
   const [aiDetections, setAiDetections] = useState<PotholeDetection[]>([]);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [aiMessage, setAiMessage] = useState<string | null>(null);
@@ -105,24 +109,24 @@ export default function ActiveTripScreen() {
     return unsub;
   }, []);
 
-  // Periodic frame grabber: takes a photo every 3s and sends it to the hosted backend model
+  // Periodic frame grabber: takes a photo every 4s and sends it to the hosted backend model
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setInterval> | null = null;
 
     if (permission?.granted) {
       timer = setInterval(async () => {
-        if (!active || !cameraRef.current) return;
+        if (!active || !cameraRef.current || webcamStreamService.getState().isProcessingFrame) return;
         try {
           const photo = await cameraRef.current.takePictureAsync({
-            quality: 0.5,
+            quality: 0.4,
             skipProcessing: true,
           });
           if (photo?.uri && active) {
             await webcamStreamService.processCapturedPhoneFrame(photo.uri);
           }
         } catch {}
-      }, 3000);
+      }, 4000);
     }
 
     return () => {
@@ -256,6 +260,20 @@ export default function ActiveTripScreen() {
           description: `Fast AI: ${defectClass} (~${defectDepth}cm) detected in drive`,
           photoUri: finalAnnotatedUrl,
         });
+
+        // Also add directly to active trip images
+        tripRecorderService.addTripImage({
+          id: `snap-${Date.now()}`,
+          uri: finalAnnotatedUrl,
+          rawUri: photoUri,
+          timestamp: Date.now(),
+          potholesFound: fastDetections.length,
+          defects: fastDetections.map((d) => d.class_name),
+          maxDepthCm: defectDepth,
+          severity: primaryDefect?.severity as any,
+          lat: reportCoords.lat,
+          lon: reportCoords.lon,
+        });
       }
     } catch (err) {
       console.warn('Camera snap failed:', err);
@@ -388,72 +406,152 @@ export default function ActiveTripScreen() {
             </Text>
             <Text style={styles.metricLabel}>GPS</Text>
           </View>
+        </View>
 
-          {/* Camera Pothole Snap Button */}
-          <TouchableOpacity
-            style={styles.cameraSnapCard}
-            onPress={handleSnapCamera}
-            activeOpacity={0.85}
-          >
-            {annotatedPhotoUrl || snappedPhoto ? (
-              <Image source={{ uri: annotatedPhotoUrl || snappedPhoto! }} style={styles.snappedThumb} />
-            ) : (
-              <View style={styles.cameraIconBox}>
-                <Ionicons name="camera" size={24} color={AppColors.primary} />
-              </View>
-            )}
-            <View style={{ flex: 1 }}>
+        {/* Real-time AI Vision Scanner HUD (Shows annotated image with bounding boxes ~4s after upload) */}
+        {(streamState.latestAnnotatedUrl || annotatedPhotoUrl || snappedPhoto) && (
+          <View style={styles.liveScanCard}>
+            <View style={styles.liveScanHeader}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Text style={styles.cameraSnapTitle}>
-                  {snappedPhoto ? 'Road Defect Snapped' : 'Capture Road Defect Photo'}
-                </Text>
-                <View style={styles.fastModelBadge}>
-                  <Text style={styles.fastModelBadgeText}>FAST AI</Text>
-                </View>
+                <View style={styles.liveScanDot} />
+                <Text style={styles.liveScanTitle}>REAL-TIME ROAD DEFECT AI SCAN</Text>
               </View>
-              <Text style={styles.cameraSnapSub}>
-                {aiMessage || (snappedPhoto
-                  ? 'Geotagged & scanned with Fast YOLO'
-                  : 'Tap to snap & run instant Fast AI road inspection')}
-              </Text>
+              <Text style={styles.liveScanCadence}>~4s CADENCE</Text>
             </View>
-            {isAiProcessing ? (
-              <ActivityIndicator size="small" color={AppColors.primary} />
-            ) : (
-              <Ionicons
-                name={snappedPhoto ? 'checkmark-circle' : 'chevron-forward'}
-                size={20}
-                color={snappedPhoto ? AppColors.success : AppColors.textMuted}
-              />
-            )}
-          </TouchableOpacity>
 
-          {/* AI Defect Results Banner */}
-          {aiDetections.length > 0 && (
-            <View style={styles.aiResultBar}>
-              <Ionicons name="sparkles" size={15} color={AppColors.accent} />
-              <Text style={styles.aiResultText}>
-                {aiDetections[0].class_name} ({Math.round(aiDetections[0].confidence * 100)}%) · ~{aiDetections[0].estimated_depth_cm}cm depth ({aiDetections[0].severity})
-              </Text>
+            <TouchableOpacity
+              activeOpacity={0.9}
+              onPress={() => setSelectedPreviewImage(streamState.latestAnnotatedUrl || annotatedPhotoUrl || snappedPhoto)}
+              style={styles.liveScanImgWrapper}
+            >
+              <Image
+                source={{ uri: streamState.latestAnnotatedUrl || annotatedPhotoUrl || snappedPhoto! }}
+                style={styles.liveScanImg}
+                resizeMode="cover"
+              />
+              <View style={styles.liveScanOverlay}>
+                <Ionicons name="expand" size={14} color="#fff" />
+                <Text style={styles.liveScanOverlayText}>Tap to inspect</Text>
+              </View>
+            </TouchableOpacity>
+
+            {/* Detections breakdown */}
+            <View style={styles.liveScanFooter}>
+              {streamState.latestDetections && streamState.latestDetections.length > 0 ? (
+                <View style={styles.defectTagRow}>
+                  {streamState.latestDetections.map((d, i) => (
+                    <View key={i} style={styles.defectTagPill}>
+                      <Ionicons name="warning" size={12} color="#dc2626" />
+                      <Text style={styles.defectTagPillText}>
+                        {d.class_name} · ~{d.estimated_depth_cm}cm ({d.severity})
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <View style={styles.clearRoadRow}>
+                  <Ionicons name="shield-checkmark" size={14} color="#10b981" />
+                  <Text style={styles.clearRoadText}>Clean road surface in frame · No major defect bounding boxes</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
+        {/* Scanned Road Images This Ride Carousel */}
+        {images && images.length > 0 && (
+          <View style={styles.rideScansCard}>
+            <View style={styles.rideScansHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="images-outline" size={16} color={AppColors.primary} />
+                <Text style={styles.rideScansTitle}>DEFECT SCANS THIS DRIVE ({images.length})</Text>
+              </View>
+              <Text style={styles.rideScansSub}>Saved for trip summary</Text>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rideScansScroll}>
+              {images.map((img, idx) => (
+                <TouchableOpacity
+                  key={img.id || idx}
+                  style={styles.rideScanThumbBox}
+                  activeOpacity={0.8}
+                  onPress={() => setSelectedPreviewImage(img.uri)}
+                >
+                  <Image source={{ uri: img.uri }} style={styles.rideScanThumb} />
+                  {img.potholesFound > 0 && (
+                    <View style={styles.rideScanThumbBadge}>
+                      <Text style={styles.rideScanThumbBadgeText}>{img.potholesFound}</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Camera Pothole Snap Button */}
+        <TouchableOpacity
+          style={styles.cameraSnapCard}
+          onPress={handleSnapCamera}
+          activeOpacity={0.85}
+        >
+          {annotatedPhotoUrl || snappedPhoto ? (
+            <Image source={{ uri: annotatedPhotoUrl || snappedPhoto! }} style={styles.snappedThumb} />
+          ) : (
+            <View style={styles.cameraIconBox}>
+              <Ionicons name="camera" size={24} color={AppColors.primary} />
             </View>
           )}
+          <View style={{ flex: 1 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Text style={styles.cameraSnapTitle}>
+                {snappedPhoto ? 'Road Defect Snapped' : 'Capture Road Defect Photo'}
+              </Text>
+              <View style={styles.fastModelBadge}>
+                <Text style={styles.fastModelBadgeText}>FAST AI</Text>
+              </View>
+            </View>
+            <Text style={styles.cameraSnapSub}>
+              {aiMessage || (snappedPhoto
+                ? 'Geotagged & scanned with Fast YOLO'
+                : 'Tap to snap & run instant Fast AI road inspection')}
+            </Text>
+          </View>
+          {isAiProcessing ? (
+            <ActivityIndicator size="small" color={AppColors.primary} />
+          ) : (
+            <Ionicons
+              name={snappedPhoto ? 'checkmark-circle' : 'chevron-forward'}
+              size={20}
+              color={snappedPhoto ? AppColors.success : AppColors.textMuted}
+            />
+          )}
+        </TouchableOpacity>
 
-          {/* Live Dashcam HUD & Vision AI Launcher */}
-          <TouchableOpacity
-            style={styles.dashcamLiveBtn}
-            onPress={() => router.push('/dashcam-pipeline')}
-            activeOpacity={0.85}
-          >
-            <View style={styles.dashcamLiveIconBox}>
-              <Ionicons name="videocam" size={20} color="#fff" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.dashcamLiveTitle}>Live Dashcam Drive Mode (Fast AI)</Text>
-              <Text style={styles.dashcamLiveSub}>Real-time camera frame stream with 15ms YOLO inference</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color={AppColors.textMuted} />
-          </TouchableOpacity>
-        </View>
+        {/* AI Defect Results Banner */}
+        {aiDetections.length > 0 && (
+          <View style={styles.aiResultBar}>
+            <Ionicons name="sparkles" size={15} color={AppColors.accent} />
+            <Text style={styles.aiResultText}>
+              {aiDetections[0].class_name} ({Math.round(aiDetections[0].confidence * 100)}%) · ~{aiDetections[0].estimated_depth_cm}cm depth ({aiDetections[0].severity})
+            </Text>
+          </View>
+        )}
+
+        {/* Live Dashcam HUD & Vision AI Launcher */}
+        <TouchableOpacity
+          style={styles.dashcamLiveBtn}
+          onPress={() => router.push('/dashcam-pipeline')}
+          activeOpacity={0.85}
+        >
+          <View style={styles.dashcamLiveIconBox}>
+            <Ionicons name="videocam" size={20} color="#fff" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.dashcamLiveTitle}>Live Dashcam Drive Mode (Fast AI)</Text>
+            <Text style={styles.dashcamLiveSub}>Real-time camera frame stream with 15ms YOLO inference</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={AppColors.textMuted} />
+        </TouchableOpacity>
 
         {/* Link to Fullscreen Dashcam HUD if desired */}
         <TouchableOpacity
@@ -476,6 +574,28 @@ export default function ActiveTripScreen() {
             onPress={handleStop}
           />
         </View>
+
+        {/* Fullscreen Image Preview Modal */}
+        <Modal
+          visible={selectedPreviewImage !== null}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setSelectedPreviewImage(null)}
+        >
+          <View style={styles.modalBg}>
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Road Defect Scan</Text>
+                <TouchableOpacity onPress={() => setSelectedPreviewImage(null)} style={styles.modalCloseBtn}>
+                  <Ionicons name="close" size={20} color="#fff" />
+                </TouchableOpacity>
+              </View>
+              {selectedPreviewImage && (
+                <Image source={{ uri: selectedPreviewImage }} style={styles.modalImg} resizeMode="contain" />
+              )}
+            </View>
+          </View>
+        </Modal>
       </ScrollView>
     </SafeAreaView>
   );
@@ -751,5 +871,201 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     flex: 1,
+  },
+  liveScanCard: {
+    backgroundColor: AppColors.surface,
+    borderRadius: 18,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+    gap: 10,
+    shadowColor: AppColors.shadow,
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  liveScanHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  liveScanDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10b981',
+  },
+  liveScanTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: AppColors.textPrimary,
+    letterSpacing: 0.6,
+  },
+  liveScanCadence: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: AppColors.primary,
+    backgroundColor: AppColors.cardAlt,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  liveScanImgWrapper: {
+    width: '100%',
+    height: 180,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    position: 'relative',
+  },
+  liveScanImg: {
+    width: '100%',
+    height: '100%',
+  },
+  liveScanOverlay: {
+    position: 'absolute',
+    bottom: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  liveScanOverlayText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  liveScanFooter: {
+    marginTop: 2,
+  },
+  defectTagRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  defectTagPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fca5a5',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  defectTagPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#b91c1c',
+  },
+  clearRoadRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 2,
+  },
+  clearRoadText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#059669',
+  },
+  rideScansCard: {
+    backgroundColor: AppColors.surface,
+    borderRadius: 18,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+    gap: 8,
+  },
+  rideScansHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  rideScansTitle: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: AppColors.textPrimary,
+    letterSpacing: 0.5,
+  },
+  rideScansSub: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: AppColors.textSecondary,
+  },
+  rideScansScroll: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  rideScanThumbBox: {
+    position: 'relative',
+    width: 64,
+    height: 64,
+    borderRadius: 10,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  rideScanThumb: {
+    width: '100%',
+    height: '100%',
+  },
+  rideScanThumbBadge: {
+    position: 'absolute',
+    top: 3,
+    right: 3,
+    backgroundColor: '#dc2626',
+    borderRadius: 8,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  rideScanThumbBadgeText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  modalBg: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  modalContent: {
+    width: '100%',
+    maxWidth: 500,
+    backgroundColor: '#18181b',
+    borderRadius: 18,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#27272a',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#27272a',
+  },
+  modalTitle: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  modalCloseBtn: {
+    padding: 4,
+  },
+  modalImg: {
+    width: '100%',
+    height: 320,
+    backgroundColor: '#000',
   },
 });

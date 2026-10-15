@@ -1,7 +1,7 @@
 import * as Location from 'expo-location';
 import { Accelerometer, Gyroscope } from 'expo-sensors';
 import * as Haptics from 'expo-haptics';
-import { Trip, RoutePoint, storage } from './storage';
+import { Trip, RoutePoint, TripImage, storage } from './storage';
 
 // ---------------------------------------------------------------------------
 // Detection & Vibration Algorithm Constants
@@ -128,6 +128,7 @@ export interface TripTelemetry {
   coords: { lat: number; lon: number } | null;
   lastJolt: JoltEvent | null;
   lastPatch: PatchEvent | null;
+  images?: TripImage[];
 }
 
 export type TelemetryListener = (telemetry: TripTelemetry) => void;
@@ -233,7 +234,27 @@ class TripRecorderService {
       coords: this._currentCoords,
       lastJolt: this._lastJolt,
       lastPatch: this._lastPatch,
+      images: this._currentTrip?.images ?? [],
     };
+  }
+
+  addTripImage(image: TripImage): void {
+    if (!this._currentTrip) return;
+    if (!this._currentTrip.images) {
+      this._currentTrip.images = [];
+    }
+    const exists = this._currentTrip.images.some((img) => img.uri === image.uri);
+    if (!exists) {
+      this._currentTrip.images.unshift(image);
+      if (this._currentTrip.images.length > 50) {
+        this._currentTrip.images.pop();
+      }
+      this._notifyListeners();
+    }
+  }
+
+  getCurrentTripImages(): TripImage[] {
+    return this._currentTrip?.images ?? [];
   }
 
   getCurrentState() {
@@ -280,6 +301,7 @@ class TripRecorderService {
       uploadStatus: 'pending',
       status: 'active',
       route: [],
+      images: [],
     };
     this._isRecording = true;
     this._elapsedSeconds = 0;

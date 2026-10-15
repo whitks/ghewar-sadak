@@ -1,7 +1,7 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
 import React, { useState, useCallback } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, FlatList, Alert,
+  View, Text, StyleSheet, TouchableOpacity, FlatList, Alert, Image,
 } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -228,6 +228,28 @@ export default function TripsScreen() {
                   <Text style={styles.statLabel}>reports</Text>
                 </View>
               </View>
+
+              {/* Scanned Defect Thumbnail Strip */}
+              {item.images && item.images.length > 0 && (
+                <View style={styles.imagePreviewRow}>
+                  <View style={styles.thumbsContainer}>
+                    {item.images.slice(0, 3).map((img, idx) => (
+                      <Image key={img.id || idx} source={{ uri: img.uri }} style={styles.tripThumb} />
+                    ))}
+                    {item.images.length > 3 && (
+                      <View style={styles.tripThumbMore}>
+                        <Text style={styles.tripThumbMoreText}>+{item.images.length - 3}</Text>
+                      </View>
+                    )}
+                  </View>
+                  <View style={styles.scansBadge}>
+                    <Ionicons name="scan-outline" size={13} color={AppColors.primary} />
+                    <Text style={styles.scansBadgeText}>
+                      {item.images.length} Road Defect Scan{item.images.length > 1 ? 's' : ''}
+                    </Text>
+                  </View>
+                </View>
+              )}
             </TouchableOpacity>
           );
         }}
@@ -346,5 +368,58 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 18,
     marginBottom: 8,
+  },
+  imagePreviewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: AppColors.border,
+  },
+  thumbsContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  tripThumb: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: '#000',
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  tripThumbMore: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: AppColors.cardAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  tripThumbMoreText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: AppColors.primary,
+  },
+  scansBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: AppColors.cardAlt,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  scansBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: AppColors.primary,
   },
 });

@@ -194,6 +194,9 @@ class WebcamStreamService {
    * Called directly by CameraView in phone_camera mode when a frame picture is taken
    */
   async processCapturedPhoneFrame(photoUri: string): Promise<VisualCandidate[]> {
+    if (this._state.isProcessingFrame) {
+      return [];
+    }
     return await this._evaluateFrameUri(photoUri);
   }
 
@@ -222,6 +225,7 @@ class WebcamStreamService {
   }
 
   private async _evaluateFrameUri(frameUri: string): Promise<VisualCandidate[]> {
+    if (this._state.isProcessingFrame) return [];
     this._state.isProcessingFrame = true;
     this._notify();
 
@@ -239,10 +243,24 @@ class WebcamStreamService {
 
       try {
         const response = await uploadDashcamFrame(frameUri, gps, 'dashcam_live');
-        if (response && response.status === 'success' && response.detections) {
-          detections = response.detections;
+        if (response && response.status === 'success') {
+          detections = response.detections || [];
           this._state.latestAnnotatedUrl = response.annotated_image_url || null;
           this._state.lastError = null;
+
+          // Save annotated scan into current active drive
+          tripRecorderService.addTripImage({
+            id: response.frame_id || `img-${Date.now()}`,
+            uri: response.annotated_image_url || frameUri,
+            rawUri: frameUri,
+            timestamp: Date.now(),
+            potholesFound: response.potholes_found ?? detections.length,
+            defects: detections.map((d) => d.class_name),
+            maxDepthCm: detections.length > 0 ? Math.max(...detections.map((d) => d.estimated_depth_cm)) : undefined,
+            severity: detections.length > 0 ? (detections[0].severity as any) : undefined,
+            lat: gps.latitude,
+            lon: gps.longitude,
+          });
         } else if (response && response.error) {
           this._state.lastError = response.error;
           detections = [];

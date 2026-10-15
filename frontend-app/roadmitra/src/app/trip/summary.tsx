@@ -1,11 +1,11 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView,
+  View, Text, StyleSheet, ScrollView, Image, TouchableOpacity, Modal,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { Trip, storage } from '../../services/storage';
+import { Trip, storage, TripImage } from '../../services/storage';
 import { MOCK_TRIPS } from '../../services/mockData';
 import { AppColors } from '../../constants/theme';
 import { Button } from '../../components/ui/Button';
@@ -22,6 +22,7 @@ function formatDuration(sec: number): string {
 export default function TripSummaryScreen() {
   const { id } = useLocalSearchParams<{ id?: string }>();
   const [trip, setTrip] = useState<Trip | null>(null);
+  const [selectedImage, setSelectedImage] = useState<TripImage | null>(null);
 
   useEffect(() => {
     async function loadTrip() {
@@ -114,6 +115,89 @@ export default function TripSummaryScreen() {
           </View>
         </View>
 
+        {/* AI Vision & Road Defect Gallery */}
+        <Card variant="elevated">
+          <View style={styles.galleryHeader}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Ionicons name="scan-outline" size={20} color={AppColors.primary} />
+              <Text style={styles.galleryTitle}>AI Vision Defect Gallery</Text>
+            </View>
+            <View style={styles.galleryBadge}>
+              <Text style={styles.galleryBadgeText}>
+                {activeTrip.images?.length ?? 0} Scanned
+              </Text>
+            </View>
+          </View>
+          <Text style={styles.gallerySub}>
+            Annotated road frames captured by windshield camera and processed by Fast YOLO
+          </Text>
+
+          {activeTrip.images && activeTrip.images.length > 0 ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.galleryScroll}
+            >
+              {activeTrip.images.map((img, idx) => (
+                <TouchableOpacity
+                  key={img.id || idx}
+                  style={styles.galleryCard}
+                  activeOpacity={0.88}
+                  onPress={() => setSelectedImage(img)}
+                >
+                  <View style={styles.galleryCardImgBox}>
+                    <Image source={{ uri: img.uri }} style={styles.galleryCardImg} resizeMode="cover" />
+                    {img.severity && (
+                      <View
+                        style={[
+                          styles.severityTag,
+                          {
+                            backgroundColor:
+                              img.severity === 'Critical'
+                                ? '#ef4444'
+                                : img.severity === 'High'
+                                ? '#f97316'
+                                : '#eab308',
+                          },
+                        ]}
+                      >
+                        <Text style={styles.severityTagText}>{img.severity}</Text>
+                      </View>
+                    )}
+                  </View>
+                  <View style={styles.galleryCardInfo}>
+                    <Text style={styles.galleryCardDefects} numberOfLines={1}>
+                      {img.defects && img.defects.length > 0
+                        ? img.defects.join(', ')
+                        : img.potholesFound > 0
+                        ? `${img.potholesFound} Pothole(s)`
+                        : 'Road Scan'}
+                    </Text>
+                    <View style={styles.galleryCardMeta}>
+                      {img.maxDepthCm && (
+                        <Text style={styles.galleryCardDepth}>~{img.maxDepthCm}cm depth</Text>
+                      )}
+                      <Text style={styles.galleryCardTime}>
+                        {new Date(img.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          ) : (
+            <View style={styles.noImagesBox}>
+              <Ionicons name="shield-checkmark-outline" size={26} color={AppColors.success} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.noImagesTitle}>Clean Surface / No Visual Defects</Text>
+                <Text style={styles.noImagesSub}>
+                  No road damage bounding boxes detected on camera during this trip.
+                </Text>
+              </View>
+            </View>
+          )}
+        </Card>
+
         {/* Upload Status Card */}
         <Card variant="elevated">
           <Text style={styles.uploadLabel}>Cloud Sync Status</Text>
@@ -181,6 +265,59 @@ export default function TripSummaryScreen() {
           icon="home"
           onPress={() => router.replace('/(tabs)')}
         />
+
+        {/* Fullscreen Modal Image Inspector */}
+        <Modal
+          visible={selectedImage !== null}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setSelectedImage(null)}
+        >
+          <View style={styles.modalBackdrop}>
+            <View style={styles.modalDialog}>
+              <View style={styles.modalHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.modalTitle}>
+                    {selectedImage?.defects && selectedImage.defects.length > 0
+                      ? selectedImage.defects.join(', ')
+                      : 'Road Defect AI Scan'}
+                  </Text>
+                  <Text style={styles.modalSubtitle}>
+                    {selectedImage ? new Date(selectedImage.timestamp).toLocaleTimeString() : ''}
+                    {selectedImage?.maxDepthCm ? ` · Estimated Depth: ${selectedImage.maxDepthCm}cm` : ''}
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => setSelectedImage(null)} style={styles.modalCloseBtn}>
+                  <Ionicons name="close" size={22} color="#fff" />
+                </TouchableOpacity>
+              </View>
+
+              {selectedImage && (
+                <Image
+                  source={{ uri: selectedImage.uri }}
+                  style={styles.modalImage}
+                  resizeMode="contain"
+                />
+              )}
+
+              <View style={styles.modalFooter}>
+                <View style={styles.modalTagRow}>
+                  <Text style={styles.modalTag}>Fast YOLO Annotations</Text>
+                  {selectedImage?.severity && (
+                    <Text style={[styles.modalTag, { color: '#ef4444', borderColor: '#ef4444' }]}>
+                      {selectedImage.severity} Severity
+                    </Text>
+                  )}
+                  {selectedImage?.lat && (
+                    <Text style={styles.modalTag}>
+                      {selectedImage.lat.toFixed(4)}, {selectedImage.lon?.toFixed(4)}
+                    </Text>
+                  )}
+                </View>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </ScrollView>
     </SafeAreaView>
   );
@@ -230,4 +367,172 @@ const styles = StyleSheet.create({
   routeHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
   routeTitle: { color: AppColors.primary, fontSize: 14, fontWeight: '700' },
   routeText: { color: AppColors.textSecondary, fontSize: 12, lineHeight: 18 },
+  galleryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  galleryTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: AppColors.textPrimary,
+  },
+  galleryBadge: {
+    backgroundColor: AppColors.cardAlt,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  galleryBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: AppColors.primary,
+  },
+  gallerySub: {
+    fontSize: 11,
+    color: AppColors.textSecondary,
+    marginBottom: 12,
+  },
+  galleryScroll: {
+    gap: 12,
+    paddingVertical: 4,
+  },
+  galleryCard: {
+    width: 170,
+    backgroundColor: AppColors.cardAlt,
+    borderRadius: 14,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  galleryCardImgBox: {
+    width: '100%',
+    height: 110,
+    backgroundColor: '#000',
+    position: 'relative',
+  },
+  galleryCardImg: {
+    width: '100%',
+    height: '100%',
+  },
+  severityTag: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  severityTagText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  galleryCardInfo: {
+    padding: 8,
+    gap: 4,
+  },
+  galleryCardDefects: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: AppColors.textPrimary,
+  },
+  galleryCardMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  galleryCardDepth: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: AppColors.accent,
+  },
+  galleryCardTime: {
+    fontSize: 10,
+    color: AppColors.textSecondary,
+  },
+  noImagesBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: AppColors.cardAlt,
+    padding: 12,
+    borderRadius: 12,
+  },
+  noImagesTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: AppColors.textPrimary,
+  },
+  noImagesSub: {
+    fontSize: 11,
+    color: AppColors.textSecondary,
+    marginTop: 2,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  modalDialog: {
+    width: '100%',
+    maxWidth: 520,
+    backgroundColor: '#18181b',
+    borderRadius: 18,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#27272a',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#27272a',
+  },
+  modalTitle: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  modalSubtitle: {
+    color: '#a1a1aa',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  modalCloseBtn: {
+    padding: 4,
+  },
+  modalImage: {
+    width: '100%',
+    height: 300,
+    backgroundColor: '#000',
+  },
+  modalFooter: {
+    padding: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#27272a',
+  },
+  modalTagRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  modalTag: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#d4d4d8',
+    backgroundColor: '#27272a',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#3f3f46',
+  },
 });

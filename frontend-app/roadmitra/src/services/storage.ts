@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Trip, UploadQueueItem, Hazard } from './mockData';
+import { Trip, UploadQueueItem, Hazard, TripImage } from './mockData';
 
-export type { Trip, UploadQueueItem, Hazard };
+export type { Trip, UploadQueueItem, Hazard, TripImage };
 
 export interface RoutePoint {
   lat: number;

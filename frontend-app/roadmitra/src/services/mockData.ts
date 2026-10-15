@@ -20,6 +20,19 @@ export interface Hazard {
   speedKmh?: number;
 }
 
+export interface TripImage {
+  id: string;
+  uri: string;
+  rawUri?: string;
+  timestamp: number;
+  potholesFound: number;
+  defects: string[];
+  maxDepthCm?: number;
+  severity?: 'Low' | 'Moderate' | 'High' | 'Critical';
+  lat?: number;
+  lon?: number;
+}
+
 export interface Trip {
   id: string;
   startTime: string | number;
@@ -34,6 +47,7 @@ export interface Trip {
   status?: string;
   points?: Array<{ lat: number; lon: number; ts: number; speed: number }>;
   route?: Array<{ lat: number; lon: number; timestamp: number }>;
+  images?: TripImage[];
   isSimulated?: boolean;
 }
 
@@ -166,6 +180,30 @@ export const MOCK_TRIPS: Trip[] = [
       { lat: MUMBAI.lat + 0.0014, lon: MUMBAI.lon + 0.0010, timestamp: Date.now() - 2800000 },
       { lat: MUMBAI.lat + 0.0017, lon: MUMBAI.lon + 0.0016, timestamp: Date.now() - 2700000 },
       { lat: MUMBAI.lat + 0.0020, lon: MUMBAI.lon + 0.0021, timestamp: Date.now() - 2600000 },
+    ],
+    images: [
+      {
+        id: 'img-mock-1',
+        uri: 'https://images.unsplash.com/photo-1515162816999-a0c47dc192f7?w=800&auto=format&fit=crop&q=80',
+        timestamp: Date.now() - 3400000,
+        potholesFound: 2,
+        defects: ['Pothole', 'Alligator Crack'],
+        maxDepthCm: 5.8,
+        severity: 'High',
+        lat: MUMBAI.lat - 0.0010,
+        lon: MUMBAI.lon - 0.0004,
+      },
+      {
+        id: 'img-mock-2',
+        uri: 'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=800&auto=format&fit=crop&q=80',
+        timestamp: Date.now() - 3000000,
+        potholesFound: 1,
+        defects: ['Transverse Crack'],
+        maxDepthCm: 3.2,
+        severity: 'Moderate',
+        lat: MUMBAI.lat + 0.0007,
+        lon: MUMBAI.lon + 0.0001,
+      },
     ],
   },
   {
