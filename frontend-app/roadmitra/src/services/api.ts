@@ -158,13 +158,14 @@ export async function uploadDashcamFrame(
   deviceId: string = 'mobile_dashcam_01',
   model: string = 'fast',
   conf: number = 0.15,
-  runDepth: boolean = false
+  runDepth: boolean = false,
+  force: boolean = false
 ): Promise<UploadFrameResponse> {
   const uploadUrl = buildUrl(activeBackendUrl, '/api/upload-frame');
 
   // Honour exponential backoff: if the backend is in a cooldown window after
-  // repeated 5xx / network failures, skip this upload silently.
-  if (_shouldSkipUpload()) {
+  // repeated 5xx / network failures, skip periodic uploads silently unless explicitly forced.
+  if (!force && _shouldSkipUpload()) {
     return {
       status: 'error',
       frame_id: '',

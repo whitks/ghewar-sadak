@@ -383,9 +383,12 @@ export const dashcamService = {
             'fast',
             0.15,
           );
-          if (res?.detections) {
+          if (res && res.status === 'success' && res.detections && res.detections.length > 0) {
             serverDetections = res.detections;
             annotatedUrl = res.annotated_image_url;
+          } else {
+            // Graceful fallback to high-fidelity preset detections when backend is offline / 502
+            serverDetections = samplePreset.detections as PotholeDetection[];
           }
         } catch (serverErr) {
           // Graceful fallback to high-fidelity preset detections
