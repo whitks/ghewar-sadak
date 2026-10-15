@@ -112,9 +112,45 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   }
 }
 
+// ── Backend availability guard with exponential backoff ──────────────────────
+// When the backend goes offline (4xx/5xx or network error) we skip upload calls
+// silently for an increasing cooldown instead of flooding the console.
+let _backoffUntilMs = 0;
+let _backoffFailCount = 0;
+let _backoffLogged = false;
+
+const BACKOFF_STEPS_MS = [30_000, 60_000, 120_000, 300_000]; // 30s→60s→120s→5min
+
+function _shouldSkipUpload(): boolean {
+  return Date.now() < _backoffUntilMs;
+}
+
+function _backoffOnError(reason: string): void {
+  const delay = BACKOFF_STEPS_MS[Math.min(_backoffFailCount, BACKOFF_STEPS_MS.length - 1)];
+  _backoffUntilMs = Date.now() + delay;
+  _backoffFailCount++;
+  if (!_backoffLogged) {
+    console.info(`[Dashcam API] Backend offline (${reason}). Upload retries paused for ${delay / 1000}s.`);
+    _backoffLogged = true;
+  }
+}
+
+function _backoffReset(): void {
+  if (_backoffLogged) {
+    console.info('[Dashcam API] Backend back online ✓');
+  }
+  _backoffUntilMs = 0;
+  _backoffFailCount = 0;
+  _backoffLogged = false;
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
  * Upload a captured dashcam frame with GPS coordinates to the hosted backend model.
  * Uses native FileSystem.uploadAsync on iOS/Android to bypass JS FormData limitations.
+ *
+ * Includes an exponential backoff guard: if the backend is unreachable (HTTP 5xx / network
+ * error) this function returns a silent error response without logging a WARN on every call.
  */
 export async function uploadDashcamFrame(
   imageUri: string,

@@ -3,18 +3,19 @@ import { View, StyleSheet, Platform, ActivityIndicator } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { Hazard } from '../services/mockData';
 import { RoadSegment } from '../services/roadSegmentation';
+import { RoadMemorySegment } from '../services/roadMemoryService';
 import { HAZARD_LABELS } from '../constants/hazardTypes';
 import { AppColors } from '../constants/theme';
 
-const DEFAULT_MAP_CENTER = { latitude: 18.9388, longitude: 72.8354 };
+const DEFAULT_MAP_CENTER = { latitude: 28.6139, longitude: 77.2090 };
 
 export interface LeafletMapProps {
   hazards: Hazard[];
-  roadSegments?: RoadSegment[];
+  roadSegments?: (RoadSegment | RoadMemorySegment)[];
   center?: { latitude: number; longitude: number } | null;
   zoom?: number;
   onSelectHazard?: (hazard: Hazard) => void;
-  onSelectSegment?: (segment: RoadSegment) => void;
+  onSelectSegment?: (segment: RoadSegment | RoadMemorySegment) => void;
 }
 
 export function LeafletMap({
@@ -85,15 +86,22 @@ export function LeafletMap({
     );
 
     const roadSegmentsJson = JSON.stringify(
-      roadSegments.map((s) => ({
+      roadSegments.map((s: any) => ({
         id: s.id,
         coordinates: s.coordinates,
         distanceMeters: s.distanceMeters,
         quality: s.quality,
         color: s.color,
-        hazardCount: s.hazardCount,
+        hazardCount: s.potholeCount ?? s.hazardCount ?? 0,
+        crackCount: s.crackCount ?? 0,
         maxGForce: s.maxGForce || null,
-        summary: s.summary,
+        summary: s.summary || s.damagePattern || `${s.roadName || 'Road'} · PCI ${s.pciScore ?? 75}`,
+        pciScore: s.pciScore ?? null,
+        roadName: s.roadName ?? null,
+        roadType: s.roadType ?? null,
+        recurrenceCount: s.recurrenceCount ?? 0,
+        lastRepairedDate: s.lastRepairedDate ?? null,
+        isRecurringHotspot: Boolean(s.isRecurringHotspot),
       })),
     );
 
@@ -214,7 +222,7 @@ export function LeafletMap({
         lineJoin: 'round'
       }).addTo(window.mapInstance);
 
-      // Colored safety severity line (Red / Yellow / Green)
+      // Colored safety severity line (Green/Yellow/Orange/Red)
       const poly = L.polyline(seg.coordinates, {
         color: seg.color,
         weight: 6,
@@ -223,21 +231,58 @@ export function LeafletMap({
         lineJoin: 'round'
       }).addTo(window.mapInstance);
 
-      const qualityBadge = seg.quality === 'critical'
-        ? '<span style="color:#DC2626; font-weight:800; font-size:12px;">CRITICAL DEFECTS (RED)</span>'
-        : seg.quality === 'moderate'
-        ? '<span style="color:#D97706; font-weight:800; font-size:12px;">MODERATE WEAR (YELLOW)</span>'
-        : '<span style="color:#16A34A; font-weight:800; font-size:12px;">HEALTHY ROAD (GREEN)</span>';
+      let segPopupHtml = '';
+      if (seg.pciScore !== null && seg.pciScore !== undefined) {
+        // Road Memory Segment with PCI and Repair intelligence
+        const qualityName = seg.quality === 'very_poor' ? 'Very Poor' : seg.quality === 'poor' ? 'Poor' : seg.quality === 'fair' ? 'Fair' : 'Good';
+        segPopupHtml = \`
+          <div style="font-size: 14px; font-weight: 800; color: #18352b; margin-bottom: 2px;">
+            \${seg.roadName || 'Road Section'}
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px; margin: 4px 0;">
+            <span style="background: \${seg.color}; color: #ffffff; padding: 2px 7px; border-radius: 6px; font-size: 11px; font-weight: 800;">
+              PCI \${seg.pciScore} · \${qualityName.toUpperCase()}
+            </span>
+            <span style="background: #f1f5f9; color: #475569; padding: 2px 6px; border-radius: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase;">
+              \${seg.roadType || 'road'}
+            </span>
+          </div>
+          \${seg.recurrenceCount >= 2 ? \`
+            <div style="background: #FEF2F2; border: 1px solid #FCA5A5; border-radius: 6px; padding: 4px 8px; margin: 5px 0; font-size: 11px; color: #991B1B; font-weight: 700;">
+              ⚠️ RECURRING DAMAGE: Failed \${seg.recurrenceCount}x after repairs
+            </div>
+          \` : ''}
+          <div style="font-size: 11px; color: #4b5563; line-height: 15px; margin: 4px 0;">
+            \${seg.summary}
+          </div>
+          <div style="font-size: 10px; color: #6b7280; margin: 4px 0 6px 0;">
+            Cracks: <b>\${seg.crackCount}</b> · Potholes: <b>\${seg.hazardCount}</b> \${seg.lastRepairedDate ? '· Last Repaired: <b>' + seg.lastRepairedDate + '</b>' : ''}
+          </div>
+          <button onclick="window.inspectSegment('\${seg.id}')" style="width: 100%; background: #18352b; color: #ffffff; border: none; border-radius: 8px; padding: 7px; font-size: 11px; font-weight: 700; cursor: pointer;">
+            Inspect Road Memory History ➔
+          </button>
+        \`;
+      } else {
+        const qualityBadge = seg.quality === 'critical'
+          ? '<span style="color:#DC2626; font-weight:800; font-size:12px;">CRITICAL DEFECTS (RED)</span>'
+          : seg.quality === 'moderate'
+          ? '<span style="color:#D97706; font-weight:800; font-size:12px;">MODERATE WEAR (YELLOW)</span>'
+          : '<span style="color:#16A34A; font-weight:800; font-size:12px;">HEALTHY ROAD (GREEN)</span>';
 
-      const segPopupHtml = \`
-        <div style="margin-bottom: 3px;">\${qualityBadge}</div>
-        <div style="font-size: 13px; color: #18352b; font-weight: 700;">
-          ~\${seg.distanceMeters}m Surveyed Section
-        </div>
-        <div style="font-size: 11px; color: #607067; margin-top: 2px;">
-          \${seg.summary}
-        </div>
-      \`;
+        segPopupHtml = \`
+          <div style="margin-bottom: 3px;">\${qualityBadge}</div>
+          <div style="font-size: 13px; color: #18352b; font-weight: 700;">
+            ~\${seg.distanceMeters}m Surveyed Section
+          </div>
+          <div style="font-size: 11px; color: #607067; margin-top: 2px;">
+            \${seg.summary}
+          </div>
+          <button onclick="window.inspectSegment('\${seg.id}')" style="margin-top: 6px; width: 100%; background: #18352b; color: #ffffff; border: none; border-radius: 6px; padding: 5px; font-size: 11px; font-weight: 700; cursor: pointer;">
+            Inspect Section ➔
+          </button>
+        \`;
+      }
+
       poly.bindPopup(segPopupHtml);
 
       poly.on('click', () => {
@@ -249,6 +294,15 @@ export function LeafletMap({
         }
       });
     });
+
+    window.inspectSegment = function(id) {
+      const payload = JSON.stringify({ type: 'segment_select', id: id });
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(payload);
+      } else if (window.parent) {
+        window.parent.postMessage(payload, '*');
+      }
+    };
 
     // ── Render Hazard Spot Pinpoints (On Top of Road Lines) ─────────────────
     const hazards = ${hazardsJson};
