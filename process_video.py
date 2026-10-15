@@ -24,12 +24,11 @@ from ultralytics import YOLO
 # Dynamic path resolution to work from root or model/
 BASE_DIR = Path(__file__).resolve().parent
 
-# Prioritize high-accuracy YOLO26 model, falling back to legacy models
+# Model candidates: prioritize fast or accurate models
 candidates = [
-    BASE_DIR / "yolo26-experiment" / "YOLO26s_RDD_Base.pt",
-    BASE_DIR / "pothole-cv-experiment" / "best.pt",
-    BASE_DIR / "final-classification" / "best.pt",
+    BASE_DIR / "model" / "fast" / "best.pt",
     BASE_DIR / "model" / "final-classification" / "best.pt",
+    BASE_DIR / "pothole-cv-experiment" / "best.pt",
 ]
 DEFAULT_MODEL_PATH = next((p for p in candidates if p.exists()), None)
 OUT_DIR = BASE_DIR / "outputs"

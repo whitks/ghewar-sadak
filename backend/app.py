@@ -7,7 +7,7 @@ Endpoints:
 - POST /api/process-clip          : Alias for /api/detect/clip
 - POST /api/upload-frame          : Ingest dashcam frame every 10s with GPS telemetry & log to database
 - POST /api/process-video         : Full video processor for long drives
-- GET  /api/models                : List available models ("fast" vs "accurate" vs "yolo26")
+- GET  /api/models                : List available models ("fast" vs "accurate")
 - GET  /api/potholes/nearby       : Proximity search: find potholes near current vehicle GPS position
 - GET  /api/potholes             : Retrieve list of all logged potholes with severity filters
 - GET  /api/stats                : Overall database analytics & counts
@@ -87,14 +87,13 @@ def health():
 
 @app.route("/api/models", methods=["GET"])
 def list_models():
-    """Returns details about available models ('fast' vs 'accurate' vs 'yolo26')."""
+    """Returns details about available models ('fast' vs 'accurate')."""
     return jsonify({
         "status": "success",
         "models": detector.list_available_models(),
         "notes": {
-            "fast": "Lightweight model from pothole-cv-experiment (~15ms latency, best for real-time feeds)",
-            "accurate": "Comprehensive model from model/ folder (Longitudinal, Transverse, Alligator Cracks, Potholes, Other)",
-            "yolo26": "CRDDC challenge fine-tuned model from yolo26-experiment (84.5% pothole precision)",
+            "fast": "Lightweight model (~15ms latency, best for real-time dashcam feeds)",
+            "accurate": "Comprehensive model (Longitudinal, Transverse, Alligator Cracks, Potholes, Other)",
             "policy": "Never filters to potholes-only; detects all road distress classes at default conf=0.15"
         }
     })
@@ -150,7 +149,7 @@ def annotate_frame():
     Takes in an image frame and serves the annotated frame with bounding boxes and defect metrics.
     
     Query/Form parameters:
-    - model: 'fast' (default, ~15ms) or 'accurate' (multi-class cracks+potholes+distress) or 'yolo26'
+    - model: 'fast' (default, ~15ms) or 'accurate' / 'slow' (multi-class cracks+potholes+distress)
     - conf: Confidence threshold (default: 0.15)
     - run_depth: Enable 3D depth transformer (default: False for real-time speed)
     - format: 'image' (returns raw image/jpeg) or 'json' (returns detections + base64 + URLs)
@@ -240,7 +239,7 @@ def detect_clip():
     
     Parameters:
     - video: Video file upload (multipart)
-    - model: 'fast' (default) or 'accurate' or 'yolo26'
+    - model: 'fast' (default) or 'accurate' / 'slow'
     - conf: Confidence threshold (default: 0.15, never potholes only)
     - max_frames: Max frames to process (default: 300)
     - format: 'json' (default, returns URLs & stats) or 'video' (direct MP4 stream)
@@ -378,24 +377,12 @@ def process_video():
     precomputed_video = VIDEOS_DIR / "sample_video_annotated.mp4"
     precomputed_snapshot = ANNOTATED_DIR / "sample_video_peak_snapshot.jpg"
 
-    # Auto-link from yolo26-experiment if not yet in uploads/videos
-    if not precomputed_video.exists():
-        exp_vid = BASE_DIR.parent / "yolo26-experiment" / "sample_video_detected.mp4"
-        if exp_vid.exists():
-            import shutil
-            shutil.copyfile(str(exp_vid), str(precomputed_video))
-    if not precomputed_snapshot.exists():
-        exp_snap = BASE_DIR.parent / "yolo26-experiment" / "sample_video_peak_snapshot.jpg"
-        if exp_snap.exists():
-            import shutil
-            shutil.copyfile(str(exp_snap), str(precomputed_snapshot))
-
-    if use_sample and precomputed_video.exists() and model_key == "yolo26":
+    if use_sample and precomputed_video.exists():
         return jsonify({
             "status": "success",
             "video_id": "sample_video_720p",
             "video_name": "sample_video_annotated.mp4",
-            "model_used": "yolo26",
+            "model_used": model_key,
             "total_frames_processed": 375,
             "fps": 25.0,
             "duration_sec": 15.0,
