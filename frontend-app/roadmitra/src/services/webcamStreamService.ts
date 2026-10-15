@@ -72,6 +72,9 @@ export interface WebcamServiceState {
   totalFramesProcessed: number;
   totalDefectsFound: number;
   recentVisualCandidates: VisualCandidate[];
+  latestDetections: PotholeDetection[];
+  latestFrameUri: string | null;
+  latestAnnotatedUrl: string | null;
   lastError: string | null;
 }
 
@@ -101,6 +104,9 @@ class WebcamStreamService {
     totalFramesProcessed: 0,
     totalDefectsFound: 0,
     recentVisualCandidates: [],
+    latestDetections: [],
+    latestFrameUri: null,
+    latestAnnotatedUrl: null,
     lastError: null,
   };
 
@@ -233,32 +239,23 @@ class WebcamStreamService {
 
       try {
         const response = await uploadDashcamFrame(frameUri, gps, 'dashcam_live');
-        if (response && response.detections) {
+        if (response && response.status === 'success' && response.detections) {
           detections = response.detections;
+          this._state.latestAnnotatedUrl = response.annotated_image_url || null;
+          this._state.lastError = null;
+        } else if (response && response.error) {
+          this._state.lastError = response.error;
+          detections = [];
         }
       } catch (err: any) {
-        // Backend offline fallback or simulated response for road testing
-        if (this._state.sourceMode === 'simulation' || frameUri.startsWith('http')) {
-          detections = [
-            {
-              id: Date.now(),
-              class_name: 'Pothole',
-              confidence: 0.82,
-              bbox: [240, 320, 520, 540],
-              estimated_depth_cm: 5.6,
-              depth_class: 'Deep (~5.6cm)',
-              severity: 'High',
-              repair_urgency: 'Immediate',
-              distance_meters: 7.2,
-            },
-          ];
-        } else {
-          throw err;
-        }
+        this._state.lastError = err?.message || 'Backend upload error';
+        detections = [];
       }
 
       this._state.totalFramesProcessed++;
       this._state.lastProcessedAt = Date.now();
+      this._state.latestDetections = detections;
+      this._state.latestFrameUri = frameUri;
 
       const registeredCandidates: VisualCandidate[] = [];
 

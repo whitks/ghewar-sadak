@@ -1,10 +1,19 @@
 import { SafeAreaView } from 'react-native-safe-area-context';
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, StyleSheet, TouchableOpacity, Animated, Image, Alert, ActivityIndicator,
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  Animated,
+  Image,
+  Alert,
+  ActivityIndicator,
+  ScrollView,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import { useTripRecorder } from '../../hooks/useTripRecorder';
@@ -13,6 +22,15 @@ import { AppColors } from '../../constants/theme';
 import { Button } from '../../components/ui/Button';
 import { annotateFrame, PotholeDetection, BACKEND_URL } from '../../services/api';
 import { HazardType } from '../../constants/hazardTypes';
+import {
+  webcamStreamService,
+  WebcamServiceState,
+} from '../../services/webcamStreamService';
+import {
+  sensorFusionService,
+  FusedEvent,
+} from '../../services/sensorFusionService';
+import { UnifiedFusionResultCard } from '../../components/UnifiedFusionResultCard';
 
 export default function ActiveTripScreen() {
   const {
@@ -43,10 +61,16 @@ export default function ActiveTripScreen() {
   const [aiDetections, setAiDetections] = useState<PotholeDetection[]>([]);
   const [isAiProcessing, setIsAiProcessing] = useState(false);
   const [aiMessage, setAiMessage] = useState<string | null>(null);
+  const [permission, requestPermission] = useCameraPermissions();
+  const [streamState, setStreamState] = useState<WebcamServiceState>(
+    webcamStreamService.getState(),
+  );
+  const [latestFusedEvent, setLatestFusedEvent] = useState<FusedEvent | null>(
+    sensorFusionService.getLatestFusedEvent(),
+  );
 
+  const cameraRef = useRef<any>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const joltAlertAnim = useRef(new Animated.Value(0)).current;
-  const patchAlertAnim = useRef(new Animated.Value(0)).current;
 
   // Pulse animation for recording beacon
   useEffect(() => {
@@ -60,27 +84,52 @@ export default function ActiveTripScreen() {
     return () => pulse.stop();
   }, [pulseAnim]);
 
-  // Flash jolt banner when a new jolt occurs
+  // Subscribe to webcam stream service
   useEffect(() => {
-    if (lastJolt) {
-      Animated.sequence([
-        Animated.timing(joltAlertAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
-        Animated.delay(2400),
-        Animated.timing(joltAlertAnim, { toValue: 0, duration: 400, useNativeDriver: true }),
-      ]).start();
-    }
-  }, [lastJolt?.id]);
+    const unsub = webcamStreamService.subscribe((s) => {
+      setStreamState(s);
+    });
+    return unsub;
+  }, []);
 
-  // Flash patch banner when a sustained rough road patch is detected
+  // Subscribe to real-time unified sensor fusion events
   useEffect(() => {
-    if (lastPatch) {
-      Animated.sequence([
-        Animated.timing(patchAlertAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
-        Animated.delay(2600),
-        Animated.timing(patchAlertAnim, { toValue: 0, duration: 400, useNativeDriver: true }),
-      ]).start();
+    const unsub = sensorFusionService.subscribe((event) => {
+      setLatestFusedEvent(event);
+      if (event.source === 'both') {
+        try {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch {}
+      }
+    });
+    return unsub;
+  }, []);
+
+  // Periodic frame grabber: takes a photo every 3s and sends it to the hosted backend model
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    if (permission?.granted) {
+      timer = setInterval(async () => {
+        if (!active || !cameraRef.current) return;
+        try {
+          const photo = await cameraRef.current.takePictureAsync({
+            quality: 0.5,
+            skipProcessing: true,
+          });
+          if (photo?.uri && active) {
+            await webcamStreamService.processCapturedPhoneFrame(photo.uri);
+          }
+        } catch {}
+      }, 3000);
     }
-  }, [lastPatch?.id]);
+
+    return () => {
+      active = false;
+      if (timer) clearInterval(timer);
+    };
+  }, [permission?.granted]);
 
   const formatDuration = (sec: number) => {
     const h = Math.floor(sec / 3600);
@@ -226,152 +275,118 @@ export default function ActiveTripScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
-      <View style={styles.container}>
-        {/* Status header */}
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Status Header */}
         <View style={styles.header}>
-          <Animated.View style={[styles.recDot, { transform: [{ scale: pulseAnim }] }]} />
-          <Text style={styles.recLabel}>TELEMETRY 50Hz ACTIVE</Text>
-          <View style={styles.gBadge}>
-            <Ionicons name="pulse" size={13} color={AppColors.primary} />
-            <Text style={styles.gBadgeText}>{gForce.toFixed(2)} G raw</Text>
+          <View style={styles.headerLeft}>
+            <Animated.View style={[styles.recDot, { transform: [{ scale: pulseAnim }] }]} />
+            <Text style={styles.recLabel}>DRIVE ACTIVE · 50Hz IMU</Text>
+          </View>
+          <View style={styles.timerBadge}>
+            <Ionicons name="time-outline" size={12} color={AppColors.textSecondary} />
+            <Text style={styles.timerText}>{formatDuration(duration)}</Text>
           </View>
         </View>
 
-        {/* Transient Jolt Alert Banner (Pothole or Speed Breaker) */}
-        {lastJolt && (
-          <Animated.View
-            style={[
-              styles.joltBanner,
-              lastJolt.defectType === 'speed_breaker' && styles.speedBreakerBanner,
-              { opacity: joltAlertAnim },
-            ]}
-          >
-            <View
+        {/* Live Camera Viewfinder (clean video feed — no bounding boxes over video) */}
+        <View style={styles.viewfinderContainer}>
+          {permission?.granted ? (
+            <>
+              <CameraView
+                ref={cameraRef}
+                facing="back"
+                style={styles.cameraView}
+              />
+
+              {/* Viewfinder HUD Overlays */}
+              <View style={styles.hudOverlay} pointerEvents="box-none">
+                <View style={styles.hudPill}>
+                  <View style={styles.hudDotLive} />
+                  <Text style={styles.hudPillText}>WINDSHIELD CAM</Text>
+                </View>
+                <View style={styles.hudPill}>
+                  <Text style={styles.hudPillText}>{vibrationRms.toFixed(2)}G RMS</Text>
+                </View>
+              </View>
+
+              {streamState.isProcessingFrame && (
+                <View style={styles.aiBadge}>
+                  <ActivityIndicator size="small" color="#fff" />
+                  <Text style={styles.aiBadgeText}>SENDING TO BACKEND MODEL...</Text>
+                </View>
+              )}
+            </>
+          ) : (
+            <View style={styles.cameraPermissionBox}>
+              <Ionicons name="camera-outline" size={38} color={AppColors.primary} />
+              <Text style={styles.permTitle}>Windshield Camera Inactive</Text>
+              <Text style={styles.permSub}>
+                Enable camera to stream road frames to backend AI model.
+              </Text>
+              <Button
+                title="Enable Camera Scan"
+                size="sm"
+                onPress={requestPermission}
+              />
+            </View>
+          )}
+        </View>
+
+        {/* Single Unified Multi-Modal Result Card (Camera + Vibration Together) */}
+        <UnifiedFusionResultCard
+          latestFusedEvent={latestFusedEvent}
+          latestDetections={streamState.latestDetections}
+          vibrationRms={vibrationRms}
+          speedKmh={speed}
+          roadQuality={roadQuality}
+          lastError={streamState.lastError}
+          isProcessingFrame={streamState.isProcessingFrame}
+        />
+
+        {/* Telemetry Metrics Row */}
+        <View style={styles.metricsRow}>
+          <View style={styles.metric}>
+            <Text style={styles.metricValue}>{speed}</Text>
+            <Text style={styles.metricLabel}>KM/H</Text>
+          </View>
+          <View style={styles.metricDivider} />
+          <View style={styles.metric}>
+            <Text
               style={[
-                styles.joltIconCircle,
-                lastJolt.defectType === 'speed_breaker' && styles.speedBreakerIconCircle,
+                styles.metricValue,
+                { color: potholeCount > 0 ? AppColors.accent : AppColors.textPrimary },
               ]}
             >
-              <Ionicons
-                name={lastJolt.defectType === 'pothole' ? 'flash' : 'car-outline'}
-                size={16}
-                color={lastJolt.defectType === 'pothole' ? AppColors.accent : '#2563eb'}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text
-                style={[
-                  styles.joltTitle,
-                  lastJolt.defectType === 'speed_breaker' && styles.speedBreakerTitle,
-                ]}
-              >
-                {lastJolt.defectType === 'pothole' ? 'Pothole Strike Detected!' : 'Speed Breaker Crossed'}
-              </Text>
-              <Text style={styles.joltSub}>
-                {lastJolt.defectType === 'pothole'
-                  ? `~${lastJolt.estimatedDepthCm}cm depth • ${lastJolt.verticalG}G vert at ${Math.round(lastJolt.speedKmh)} km/h`
-                  : `${lastJolt.verticalG}G vertical lift at ${Math.round(lastJolt.speedKmh)} km/h`}
-              </Text>
-            </View>
-          </Animated.View>
-        )}
-
-        {/* Transient Rough Road Patch Alert Banner */}
-        {lastPatch && (
-          <Animated.View style={[styles.patchBanner, { opacity: patchAlertAnim }]}>
-            <View style={styles.patchIconCircle}>
-              <Ionicons name="git-commit" size={16} color="#d97706" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.patchTitle}>Rough Road Patch Detected!</Text>
-              <Text style={styles.patchSub}>
-                {lastPatch.avgRms}G sustained vibration for {lastPatch.durationSec}s at {Math.round(lastPatch.speedKmh)} km/h
-              </Text>
-            </View>
-          </Animated.View>
-        )}
-
-        {/* Main display */}
-        <View style={styles.mainDisplay}>
-          <Text style={styles.timerLabel}>Drive Duration</Text>
-          <Text style={styles.timer}>{formatDuration(duration)}</Text>
-
-          {/* Real-time Vehicle Vibration & Road Quality Monitor */}
-          <View style={styles.vibrationCard}>
-            <View style={styles.vibrationHeader}>
-              <View style={[styles.qualityPill, { backgroundColor: qualityInfo.bg }]}>
-                <Ionicons name={qualityInfo.icon as any} size={13} color={qualityInfo.color} />
-                <Text style={[styles.qualityPillText, { color: qualityInfo.color }]}>
-                  {qualityInfo.label}
-                </Text>
-              </View>
-              <View style={styles.vibrationNumBox}>
-                <Text style={styles.vibrationNumLabel}>RMS VIBRATION</Text>
-                <Text style={styles.vibrationNumVal}>{vibrationRms.toFixed(2)} G</Text>
-              </View>
-            </View>
-
-            {/* Continuous Vibration Energy Bar */}
-            <View style={styles.barContainer}>
-              <View
-                style={[
-                  styles.barFill,
-                  {
-                    width: `${Math.max(4, vibrationPercent)}%`,
-                    backgroundColor: qualityInfo.color,
-                  },
-                ]}
-              />
-            </View>
-            <View style={styles.barLabels}>
-              <Text style={styles.barLabelText}>Vert: {verticalGForce.toFixed(2)}G</Text>
-              <Text style={styles.barLabelText}>Score: {roadQualityScore}/100</Text>
-              <Text style={styles.barLabelText}>Horiz: {horizontalGForce.toFixed(2)}G</Text>
-            </View>
+              {potholeCount}
+            </Text>
+            <Text style={styles.metricLabel}>POTHOLES</Text>
           </View>
-
-          {/* Real Metrics Card */}
-          <View style={styles.metricsRow}>
-            <View style={styles.metric}>
-              <Text style={styles.metricValue}>{speed}</Text>
-              <Text style={styles.metricLabel}>km/h</Text>
-            </View>
-            <View style={styles.metricDivider} />
-            <View style={styles.metric}>
-              <Text
-                style={[
-                  styles.metricValue,
-                  { color: potholeCount > 0 ? AppColors.accent : AppColors.textPrimary },
-                ]}
-              >
-                {potholeCount}
-              </Text>
-              <Text style={styles.metricLabel}>potholes</Text>
-            </View>
-            <View style={styles.metricDivider} />
-            <View style={styles.metric}>
-              <Text style={styles.metricValue}>{distanceKm.toFixed(1)}</Text>
-              <Text style={styles.metricLabel}>km</Text>
-            </View>
-            <View style={styles.metricDivider} />
-            <View style={styles.metric}>
-              <Text
-                style={[
-                  styles.metricValue,
-                  { color: patchCount > 0 ? '#d97706' : AppColors.textPrimary },
-                ]}
-              >
-                {patchCount}
-              </Text>
-              <Text style={styles.metricLabel}>patches</Text>
-            </View>
-            <View style={styles.metricDivider} />
-            <View style={styles.metric}>
-              <Text style={styles.metricValue}>
-                ±{gpsAccuracy ? `${gpsAccuracy}m` : '8m'}
-              </Text>
-              <Text style={styles.metricLabel}>GPS</Text>
-            </View>
+          <View style={styles.metricDivider} />
+          <View style={styles.metric}>
+            <Text style={styles.metricValue}>{distanceKm.toFixed(1)}</Text>
+            <Text style={styles.metricLabel}>KM</Text>
+          </View>
+          <View style={styles.metricDivider} />
+          <View style={styles.metric}>
+            <Text
+              style={[
+                styles.metricValue,
+                { color: patchCount > 0 ? '#d97706' : AppColors.textPrimary },
+              ]}
+            >
+              {patchCount}
+            </Text>
+            <Text style={styles.metricLabel}>PATCHES</Text>
+          </View>
+          <View style={styles.metricDivider} />
+          <View style={styles.metric}>
+            <Text style={styles.metricValue}>
+              ±{gpsAccuracy ? `${gpsAccuracy}m` : '8m'}
+            </Text>
+            <Text style={styles.metricLabel}>GPS</Text>
           </View>
 
           {/* Camera Pothole Snap Button */}
@@ -440,15 +455,18 @@ export default function ActiveTripScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Bottom actions */}
-        <View style={styles.bottomArea}>
-          <View style={styles.safetyNote}>
-            <Ionicons name="shield-checkmark-outline" size={16} color={AppColors.warning} />
-            <Text style={styles.safetyText}>
-              Keep device docked. False spikes from braking or phone handling are filtered out automatically.
-            </Text>
-          </View>
+        {/* Link to Fullscreen Dashcam HUD if desired */}
+        <TouchableOpacity
+          style={styles.fullscreenHudBtn}
+          onPress={() => router.push('/dashcam-live')}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="expand-outline" size={16} color={AppColors.primary} />
+          <Text style={styles.fullscreenHudBtnText}>Open Fullscreen HUD & Dashcam Settings</Text>
+        </TouchableOpacity>
 
+        {/* Stop Trip Button */}
+        <View style={styles.bottomArea}>
           <Button
             title="End Trip & View Summary"
             variant="destructive"
@@ -458,181 +476,145 @@ export default function ActiveTripScreen() {
             onPress={handleStop}
           />
         </View>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: AppColors.bg },
-  container: { flex: 1, justifyContent: 'space-between', padding: 20, paddingBottom: 28 },
+  scrollContent: {
+    padding: 16,
+    paddingBottom: 32,
+    gap: 14,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    paddingTop: 6,
+    justifyContent: 'space-between',
+    paddingVertical: 4,
   },
-  recDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: AppColors.accent },
-  recLabel: { color: AppColors.accent, fontSize: 13, fontWeight: '800', letterSpacing: 1.5, flex: 1 },
-  gBadge: {
+  headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 8,
+  },
+  recDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: AppColors.accent,
+  },
+  recLabel: {
+    color: AppColors.accent,
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+  },
+  timerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     backgroundColor: AppColors.cardAlt,
-    borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 5,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: AppColors.border,
   },
-  gBadgeText: { color: AppColors.primary, fontSize: 12, fontWeight: '800' },
-  joltBanner: {
-    backgroundColor: '#fff1f2',
-    borderRadius: 16,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#fecdd3',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    shadowColor: AppColors.accent,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    elevation: 3,
-  },
-  speedBreakerBanner: {
-    backgroundColor: '#eff6ff',
-    borderColor: '#bfdbfe',
-    shadowColor: '#2563eb',
-  },
-  joltIconCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#ffe4e6',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  speedBreakerIconCircle: {
-    backgroundColor: '#dbeafe',
-  },
-  joltTitle: { color: AppColors.accent, fontSize: 13, fontWeight: '800' },
-  speedBreakerTitle: { color: '#1d4ed8', fontSize: 13, fontWeight: '800' },
-  joltSub: { color: AppColors.textSecondary, fontSize: 11, fontWeight: '500' },
-  patchBanner: {
-    backgroundColor: '#fffbeb',
-    borderRadius: 16,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#fde68a',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    shadowColor: '#d97706',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
-    elevation: 3,
-  },
-  patchIconCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#fef3c7',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  patchTitle: { color: '#b45309', fontSize: 13, fontWeight: '800' },
-  patchSub: { color: AppColors.textSecondary, fontSize: 11, fontWeight: '500' },
-  mainDisplay: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 },
-  timerLabel: {
-    color: AppColors.textSecondary,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-  },
-  timer: {
+  timerText: {
+    fontSize: 13,
+    fontWeight: '800',
     color: AppColors.textPrimary,
-    fontSize: 60,
-    fontWeight: '900',
-    letterSpacing: -2,
     fontVariant: ['tabular-nums'],
   },
-  vibrationCard: {
+  viewfinderContainer: {
     width: '100%',
-    backgroundColor: AppColors.surface,
+    height: 240,
+    backgroundColor: '#000',
     borderRadius: 20,
-    padding: 16,
-    borderWidth: 1,
+    overflow: 'hidden',
+    position: 'relative',
+    borderWidth: 1.5,
     borderColor: AppColors.border,
-    shadowColor: AppColors.shadow,
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 2,
-    gap: 10,
   },
-  vibrationHeader: {
+  cameraView: {
+    flex: 1,
+  },
+  hudOverlay: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    right: 12,
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
   },
-  qualityPill: {
+  hudPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 10,
   },
-  qualityPillText: {
-    fontSize: 11,
+  hudDotLive: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: AppColors.success,
+  },
+  hudPillText: {
+    color: '#fff',
+    fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 0.6,
+    letterSpacing: 0.5,
   },
-  vibrationNumBox: {
-    alignItems: 'flex-end',
+  aiBadge: {
+    position: 'absolute',
+    bottom: 12,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(37, 99, 235, 0.85)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
   },
-  vibrationNumLabel: {
+  aiBadgeText: {
+    color: '#fff',
     fontSize: 9,
-    fontWeight: '700',
-    color: AppColors.textSecondary,
+    fontWeight: '800',
     letterSpacing: 0.8,
   },
-  vibrationNumVal: {
-    fontSize: 14,
-    fontWeight: '900',
+  cameraPermissionBox: {
+    flex: 1,
+    backgroundColor: AppColors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+    gap: 8,
+  },
+  permTitle: {
+    fontSize: 15,
+    fontWeight: '800',
     color: AppColors.textPrimary,
   },
-  barContainer: {
-    width: '100%',
-    height: 8,
-    backgroundColor: AppColors.cardAlt,
-    borderRadius: 4,
-    overflow: 'hidden',
-  },
-  barFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  barLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  barLabelText: {
-    fontSize: 10,
-    color: AppColors.textMuted,
-    fontWeight: '600',
+  permSub: {
+    fontSize: 11,
+    color: AppColors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 16,
+    marginBottom: 6,
   },
   metricsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: AppColors.surface,
-    borderRadius: 20,
-    paddingVertical: 14,
-    paddingHorizontal: 12,
+    borderRadius: 18,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
     borderWidth: 1,
     borderColor: AppColors.border,
     shadowColor: AppColors.shadow,
@@ -640,19 +622,23 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 2 },
     elevation: 2,
-    width: '100%',
     justifyContent: 'space-around',
   },
   metric: { alignItems: 'center', minWidth: 50 },
-  metricValue: { color: AppColors.textPrimary, fontSize: 22, fontWeight: '900', letterSpacing: -0.5 },
+  metricValue: {
+    color: AppColors.textPrimary,
+    fontSize: 20,
+    fontWeight: '900',
+    letterSpacing: -0.5,
+  },
   metricLabel: {
     color: AppColors.textSecondary,
-    fontSize: 10,
-    fontWeight: '700',
+    fontSize: 9,
+    fontWeight: '800',
     marginTop: 2,
-    textTransform: 'uppercase',
+    letterSpacing: 0.6,
   },
-  metricDivider: { width: 1, height: 30, backgroundColor: AppColors.border },
+  metricDivider: { width: 1, height: 26, backgroundColor: AppColors.border },
   cameraSnapCard: {
     backgroundColor: AppColors.surface,
     borderRadius: 18,
@@ -714,16 +700,24 @@ const styles = StyleSheet.create({
   },
   dashcamLiveTitle: { color: AppColors.textPrimary, fontSize: 13, fontWeight: '800' },
   dashcamLiveSub: { color: AppColors.textSecondary, fontSize: 11, marginTop: 2 },
-  bottomArea: { gap: 10 },
-  safetyNote: {
-    backgroundColor: AppColors.warningBg,
-    borderRadius: 14,
-    padding: 10,
+  fullscreenHudBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 8,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: AppColors.cardAlt,
     borderWidth: 1,
-    borderColor: AppColors.warningBorder,
+    borderColor: AppColors.border,
+  },
+  fullscreenHudBtnText: {
+    color: AppColors.primary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  bottomArea: {
+    marginTop: 4,
   },
   safetyText: { color: AppColors.warning, fontSize: 11, fontWeight: '600', flex: 1, lineHeight: 15 },
   fastModelBadge: {

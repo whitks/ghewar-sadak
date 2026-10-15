@@ -246,6 +246,18 @@ class TripRecorderService {
     };
   }
 
+  get isRecording(): boolean {
+    return this._isRecording;
+  }
+
+  async startTrip(): Promise<void> {
+    return this.startRecording();
+  }
+
+  async stopTrip(): Promise<Trip | null> {
+    return this.stopRecording();
+  }
+
   // -------------------------------------------------------------------------
   // Recording Lifecycle
   // -------------------------------------------------------------------------
@@ -827,29 +839,8 @@ class TripRecorderService {
       },
     }).catch(() => {});
 
-    // Save as local Hazard
-    const rawConf = Math.min(0.98, 0.60 + ((peakDyn - baseThresh) / baseThresh) * 0.60);
-    const phoneScore = Number(rawConf.toFixed(2));
-    const severityScore = Math.min(100, Math.round(normalizedImpact * 65));
-
-    const descName = defectType === 'pothole' ? 'Pothole strike' : 'Speed breaker';
-    storage.addHazard({
-      id: `haz-shock-${jolt.id}`,
-      lat: jolt.lat,
-      lon: jolt.lon,
-      type: defectType === 'pothole' ? 'pothole' : 'speed_breaker',
-      status: 'unconfirmed',
-      confidence: phoneScore,
-      severity: severityScore,
-      source: 'phone',
-      phoneScore,
-      deviceCount: 1,
-      lastSeen: new Date().toISOString(),
-      description: `${descName}: ~${estimatedDepthCm}cm (${jolt.magnitude}G dyn, ${jolt.totalG}G raw) at ${Math.round(jolt.speedKmh)} km/h`,
-      magnitude: jolt.magnitude,
-      speedKmh: jolt.speedKmh,
-    }).catch(() => {});
-
+    // Event is published via _lastJolt to sensorFusionService, which creates
+    // the single unified hazard (dual-confirmed with camera or vibration-only)
     this._notifyListeners();
   }
 
@@ -906,27 +897,8 @@ class TripRecorderService {
       },
     }).catch(() => {});
 
-    // Save as local Hazard with type 'rough_patch'
-    const confidence = Math.min(0.95, Number((0.65 + (avgRms - PATCH_RMS_THRESHOLD) * 1.5).toFixed(2)));
-    const severityScore = Math.min(100, Math.round(avgRms * 180 + this._currentSpeed * 0.3));
-
-    storage.addHazard({
-      id: `haz-patch-${patch.id}`,
-      lat: patch.lat,
-      lon: patch.lon,
-      type: 'rough_patch',
-      status: 'unconfirmed',
-      confidence,
-      severity: severityScore,
-      source: 'phone',
-      phoneScore: confidence,
-      deviceCount: 1,
-      lastSeen: new Date().toISOString(),
-      description: `Rough road patch: ${avgRms.toFixed(2)}G vibration for ${durationSec}s at ${Math.round(this._currentSpeed)} km/h`,
-      magnitude: Number(avgRms.toFixed(2)),
-      speedKmh: this._currentSpeed,
-    }).catch(() => {});
-
+    // Rough patch event is published via _lastPatch to sensorFusionService,
+    // which unifies it with camera texture candidates or records single patch hazard
     this._notifyListeners();
   }
 }

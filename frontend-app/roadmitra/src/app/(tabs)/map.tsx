@@ -13,6 +13,7 @@ import { HAZARD_LABELS, HAZARD_VECTOR_ICONS } from '../../constants/hazardTypes'
 import { AppColors } from '../../constants/theme';
 import { Button } from '../../components/ui/Button';
 import { LeafletMap } from '../../components/LeafletMap';
+import { tripRecorderService } from '../../services/tripRecorder';
 
 const DEFAULT_COORDS = {
   latitude: 18.9388,
@@ -27,7 +28,12 @@ export default function MapScreen() {
   const [roadSegments, setRoadSegments] = useState<RoadSegment[]>([]);
   const [selectedHazard, setSelectedHazard] = useState<Hazard | null>(null);
   const [selectedSegment, setSelectedSegment] = useState<RoadSegment | null>(null);
-  const [userLocation, setUserLocation] = useState(DEFAULT_COORDS);
+  
+  const initialLiveCoords = tripRecorderService.getTelemetry().coords;
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(
+    initialLiveCoords ? { latitude: initialLiveCoords.lat, longitude: initialLiveCoords.lon } : null
+  );
+  const [isLocating, setIsLocating] = useState(!initialLiveCoords);
   const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
 
   const loadHazardsAndRoutes = useCallback(async () => {
@@ -64,21 +70,62 @@ export default function MapScreen() {
   );
 
   useEffect(() => {
-    async function getUserLocation() {
+    let isMounted = true;
+    async function resolveLocation() {
       try {
-        const { status } = await Location.getForegroundPermissionsAsync();
-        if (status === 'granted') {
-          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          if (loc?.coords) {
-            setUserLocation({
-              latitude: loc.coords.latitude,
-              longitude: loc.coords.longitude,
-            });
+        // 1. Immediately check cached location in storage if not already set
+        if (!userLocation) {
+          const cached = await storage.getLastLocation();
+          if (cached && isMounted) {
+            setUserLocation(cached);
+            setIsLocating(false);
           }
         }
-      } catch {}
+
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status === 'granted') {
+          // 2. Instant OS last-known position (< 20ms)
+          const lastKnown = await Location.getLastKnownPositionAsync().catch(() => null);
+          if (lastKnown?.coords && isMounted) {
+            const coords = {
+              latitude: lastKnown.coords.latitude,
+              longitude: lastKnown.coords.longitude,
+            };
+            setUserLocation(coords);
+            setIsLocating(false);
+            storage.saveLastLocation(coords).catch(() => {});
+          }
+
+          // 3. Accurate GPS refresh
+          const fresh = await Location.getCurrentPositionAsync({
+            accuracy: Location.Accuracy.Balanced,
+          }).catch(() => null);
+          if (fresh?.coords && isMounted) {
+            const coords = {
+              latitude: fresh.coords.latitude,
+              longitude: fresh.coords.longitude,
+            };
+            setUserLocation(coords);
+            setIsLocating(false);
+            storage.saveLastLocation(coords).catch(() => {});
+          }
+        } else {
+          if (isMounted) {
+            setUserLocation((prev) => prev ?? DEFAULT_COORDS);
+            setIsLocating(false);
+          }
+        }
+      } catch {
+        if (isMounted) {
+          setUserLocation((prev) => prev ?? DEFAULT_COORDS);
+          setIsLocating(false);
+        }
+      }
     }
-    getUserLocation();
+    resolveLocation();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const totalSurveyedKm = useMemo(() => {
@@ -107,10 +154,12 @@ export default function MapScreen() {
     try {
       const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       if (loc?.coords) {
-        setUserLocation({
+        const coords = {
           latitude: loc.coords.latitude,
           longitude: loc.coords.longitude,
-        });
+        };
+        setUserLocation(coords);
+        storage.saveLastLocation(coords).catch(() => {});
       }
     } catch {}
   };
@@ -229,29 +278,41 @@ export default function MapScreen() {
         {/* Main Content: Map or List View */}
         {viewMode === 'map' ? (
           <View style={styles.mapContainer}>
-            <LeafletMap
-              hazards={filtered}
-              roadSegments={roadSegments}
-              center={userLocation}
-              zoom={14}
-              onSelectHazard={(h) => {
-                setSelectedSegment(null);
-                setSelectedHazard(h);
-              }}
-              onSelectSegment={(s) => {
-                setSelectedHazard(null);
-                setSelectedSegment(s);
-              }}
-            />
+            {!userLocation ? (
+              <View style={styles.locatingContainer}>
+                <View style={styles.locatingPulseBox}>
+                  <Ionicons name="navigate" size={30} color={AppColors.primary} />
+                </View>
+                <Text style={styles.locatingTitle}>Acquiring Live GPS Location...</Text>
+                <Text style={styles.locatingSub}>Centering radar directly on your position</Text>
+              </View>
+            ) : (
+              <>
+                <LeafletMap
+                  hazards={filtered}
+                  roadSegments={roadSegments}
+                  center={userLocation}
+                  zoom={15}
+                  onSelectHazard={(h) => {
+                    setSelectedSegment(null);
+                    setSelectedHazard(h);
+                  }}
+                  onSelectSegment={(s) => {
+                    setSelectedHazard(null);
+                    setSelectedSegment(s);
+                  }}
+                />
 
-            {/* Floating Recenter Button */}
-            <TouchableOpacity
-              style={styles.recenterBtn}
-              onPress={handleRecenter}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="locate" size={20} color={AppColors.primary} />
-            </TouchableOpacity>
+                {/* Floating Recenter Button */}
+                <TouchableOpacity
+                  style={styles.recenterBtn}
+                  onPress={handleRecenter}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="locate" size={20} color={AppColors.primary} />
+                </TouchableOpacity>
+              </>
+            )}
 
             {/* Selected Road Segment Callout */}
             {selectedSegment && !selectedHazard && (
@@ -638,5 +699,34 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     marginTop: 2,
+  },
+  locatingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: AppColors.bg,
+    padding: 24,
+    gap: 8,
+  },
+  locatingPulseBox: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: AppColors.cardAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+  },
+  locatingTitle: {
+    color: AppColors.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  locatingSub: {
+    color: AppColors.textSecondary,
+    fontSize: 13,
+    fontWeight: '500',
   },
 });

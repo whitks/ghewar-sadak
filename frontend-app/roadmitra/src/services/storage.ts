@@ -44,9 +44,29 @@ const KEYS = {
   UPLOAD_QUEUE: 'upload_queue',
   SETTINGS: 'settings',
   HAZARDS: 'hazards',
+  LAST_LOCATION: 'last_location',
 };
 
 export const storage = {
+  async getLastLocation(): Promise<{ latitude: number; longitude: number } | null> {
+    const v = await safeGetItem(KEYS.LAST_LOCATION);
+    if (!v) return null;
+    try {
+      const parsed = JSON.parse(v);
+      if (typeof parsed?.latitude === 'number' && typeof parsed?.longitude === 'number') {
+        return parsed;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  },
+
+  async saveLastLocation(coords: { latitude: number; longitude: number }): Promise<void> {
+    if (!coords || typeof coords.latitude !== 'number') return;
+    await safeSetItem(KEYS.LAST_LOCATION, JSON.stringify(coords));
+  },
+
   async isOnboardingDone(): Promise<boolean> {
     const v = await safeGetItem(KEYS.ONBOARDING_DONE);
     return v === 'true';

@@ -107,6 +107,10 @@ class SensorFusionService {
     }
   }
 
+  getLatestFusedEvent(): FusedEvent | null {
+    return this._fusedEvents[0] ?? null;
+  }
+
   getRecentEvents(): FusedEvent[] {
     return [...this._fusedEvents];
   }
@@ -124,15 +128,16 @@ class SensorFusionService {
     gps: { latitude: number; longitude: number; speed?: number },
   ): VisualCandidate {
     const now = Date.now();
-    const speedKmh = Math.max(15, gps.speed ?? 30);
+    const isStationary = !gps.speed || gps.speed <= 10;
+    const speedKmh = isStationary ? 25 : gps.speed!;
     const speedMps = speedKmh / 3.6;
 
-    // Estimate distance ahead from depth/bbox or default ~6.5m ahead of bumper
-    const distanceAheadM = detection.distance_meters ?? 6.5;
+    // Estimate distance ahead from depth/bbox or default ~5.5m ahead of bumper
+    const distanceAheadM = detection.distance_meters ?? 5.5;
 
-    // Time to impact: Δt = d / v
-    const timeToImpactMs = (distanceAheadM / speedMps) * 1000;
-    const expectedImpactTimestamp = now + Math.round(timeToImpactMs);
+    // Time to impact: Δt = d / v (for stationary, expected impact is immediate / current window)
+    const timeToImpactMs = isStationary ? 0 : (distanceAheadM / speedMps) * 1000;
+    const expectedImpactTimestamp = isStationary ? now : now + Math.round(timeToImpactMs);
 
     const cName = detection.class_name.toLowerCase();
     const defectType: 'pothole' | 'rough_patch' | 'speed_breaker' =
@@ -159,15 +164,16 @@ class SensorFusionService {
 
     this._visualCandidates.push(candidate);
 
-    // Prune stale visual candidates older than 6 seconds
-    const pruneCutoff = now - 6000;
+    // Prune stale visual candidates older than 10 seconds
+    const pruneCutoff = now - 10000;
     this._visualCandidates = this._visualCandidates.filter((c) => c.timestamp >= pruneCutoff);
 
-    // Schedule unmatched fallback check: If vehicle passed without vibration (e.g. driver swerved),
-    // still save as 'camera' detected hazard
+    // Schedule unmatched fallback check: If vehicle passed or driver avoided,
+    // record as visual-only detection so it's not lost
+    const gracePeriodMs = isStationary ? 6000 : Math.max(3500, timeToImpactMs + 1800);
     setTimeout(() => {
       this._checkUnmatchedVisualCandidate(candidate.id);
-    }, Math.max(2500, timeToImpactMs + 1000));
+    }, gracePeriodMs);
 
     return candidate;
   }
@@ -183,17 +189,26 @@ class SensorFusionService {
     const now = Date.now();
     let bestMatch: VisualCandidate | null = null;
     let minTimeDiff = Infinity;
+    const isStationary = jolt.speedKmh <= 10;
 
     // Search active visual candidates for spatial & temporal alignment
     for (const cand of this._visualCandidates) {
       if (cand.matched) continue;
 
-      const timeDiff = Math.abs(now - cand.expectedImpactTimestamp);
-      if (timeDiff <= FUSION_TIME_WINDOW_MS) {
-        const dist = haversineM(cand.lat, cand.lon, jolt.lat, jolt.lon);
-        if (dist <= FUSION_MAX_DISTANCE_M && timeDiff < minTimeDiff) {
-          minTimeDiff = timeDiff;
+      if (isStationary) {
+        // When stationary or testing: match with any active visual detection within last 10 seconds!
+        if (now - cand.timestamp <= 10000) {
           bestMatch = cand;
+          break;
+        }
+      } else {
+        const timeDiff = Math.abs(now - cand.expectedImpactTimestamp);
+        if (timeDiff <= 2500) {
+          const dist = haversineM(cand.lat, cand.lon, jolt.lat, jolt.lon);
+          if (dist <= 25 && timeDiff < minTimeDiff) {
+            minTimeDiff = timeDiff;
+            bestMatch = cand;
+          }
         }
       }
     }
@@ -228,6 +243,27 @@ class SensorFusionService {
 
       this._saveFusedHazard(fusedEvent);
       this._notify(fusedEvent);
+    } else {
+      // Vibration-only detection (no camera match)
+      const phoneConf = Math.min(0.95, 0.50 + jolt.magnitude * 0.35);
+      const fusedEvent: FusedEvent = {
+        id: `shock-${jolt.id}`,
+        timestamp: now,
+        lat: jolt.lat,
+        lon: jolt.lon,
+        type: jolt.defectType,
+        source: 'phone',
+        fusedConfidence: Number(phoneConf.toFixed(2)),
+        cameraConfidence: 0.0,
+        phoneConfidence: Number(phoneConf.toFixed(2)),
+        estimatedDepthCm: jolt.estimatedDepthCm,
+        peakG: jolt.magnitude,
+        speedKmh: jolt.speedKmh,
+        description: `Vibration ${jolt.defectType.toUpperCase()}: ${jolt.magnitude}G shock (~${jolt.estimatedDepthCm}cm depth)`,
+      };
+
+      this._saveFusedHazard(fusedEvent);
+      this._notify(fusedEvent);
     }
   }
 
@@ -237,11 +273,16 @@ class SensorFusionService {
   private onPhysicalPatchDetected(patch: PatchEvent) {
     const now = Date.now();
     let bestMatch: VisualCandidate | null = null;
+    const isStationary = patch.speedKmh <= 10;
 
     for (const cand of this._visualCandidates) {
       if (cand.matched || cand.defectType !== 'rough_patch') continue;
+      if (isStationary && now - cand.timestamp <= 10000) {
+        bestMatch = cand;
+        break;
+      }
       const dist = haversineM(cand.lat, cand.lon, patch.lat, patch.lon);
-      if (dist <= FUSION_MAX_DISTANCE_M) {
+      if (dist <= 25) {
         bestMatch = cand;
         break;
       }
@@ -270,6 +311,26 @@ class SensorFusionService {
         speedKmh: patch.speedKmh,
         description: `Dual-Confirmed ROUGH PATCH: Camera texture + ${patch.avgRms}G sustained vibration (${patch.durationSec}s)`,
         photoUri: bestMatch.photoUri,
+      };
+
+      this._saveFusedHazard(fusedEvent);
+      this._notify(fusedEvent);
+    } else {
+      const phoneConf = Math.min(0.90, 0.45 + patch.avgRms * 1.5);
+      const fusedEvent: FusedEvent = {
+        id: `patch-${patch.id}`,
+        timestamp: now,
+        lat: patch.lat,
+        lon: patch.lon,
+        type: 'rough_patch',
+        source: 'phone',
+        fusedConfidence: Number(phoneConf.toFixed(2)),
+        cameraConfidence: 0.0,
+        phoneConfidence: Number(phoneConf.toFixed(2)),
+        estimatedDepthCm: 2.5,
+        peakG: Number(patch.avgRms.toFixed(2)),
+        speedKmh: patch.speedKmh,
+        description: `Vibration ROUGH PATCH: ${patch.avgRms}G sustained vibration (${patch.durationSec}s)`,
       };
 
       this._saveFusedHazard(fusedEvent);

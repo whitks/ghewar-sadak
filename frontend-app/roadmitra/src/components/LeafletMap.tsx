@@ -6,10 +6,12 @@ import { RoadSegment } from '../services/roadSegmentation';
 import { HAZARD_LABELS } from '../constants/hazardTypes';
 import { AppColors } from '../constants/theme';
 
+const DEFAULT_MAP_CENTER = { latitude: 18.9388, longitude: 72.8354 };
+
 export interface LeafletMapProps {
   hazards: Hazard[];
   roadSegments?: RoadSegment[];
-  center: { latitude: number; longitude: number };
+  center?: { latitude: number; longitude: number } | null;
   zoom?: number;
   onSelectHazard?: (hazard: Hazard) => void;
   onSelectSegment?: (segment: RoadSegment) => void;
@@ -24,9 +26,26 @@ export function LeafletMap({
   onSelectSegment,
 }: LeafletMapProps) {
   const webViewRef = useRef<WebView>(null);
+  const safeCenter =
+    center && typeof center.latitude === 'number' && typeof center.longitude === 'number'
+      ? center
+      : DEFAULT_MAP_CENTER;
+  const initialCenterRef = useRef(safeCenter);
+
+  if (
+    center &&
+    typeof center.latitude === 'number' &&
+    typeof center.longitude === 'number' &&
+    initialCenterRef.current === DEFAULT_MAP_CENTER
+  ) {
+    initialCenterRef.current = center;
+  }
 
   // Recenter map programmatically when center prop changes
   useEffect(() => {
+    if (!center || typeof center.latitude !== 'number' || typeof center.longitude !== 'number') {
+      return;
+    }
     const js = `
       if (window.mapInstance) {
         window.mapInstance.setView([${center.latitude}, ${center.longitude}], ${zoom});
@@ -39,7 +58,7 @@ export function LeafletMap({
     if (Platform.OS !== 'web' && webViewRef.current) {
       webViewRef.current.injectJavaScript(js);
     }
-  }, [center.latitude, center.longitude, zoom]);
+  }, [center?.latitude, center?.longitude, zoom]);
 
   const htmlContent = useMemo(() => {
     const hazardsJson = JSON.stringify(
@@ -159,7 +178,7 @@ export function LeafletMap({
     window.mapInstance = L.map('map', {
       zoomControl: false,
       attributionControl: true
-    }).setView([${center.latitude}, ${center.longitude}], ${zoom});
+    }).setView([${safeCenter.latitude}, ${safeCenter.longitude}], ${zoom});
 
     L.control.zoom({ position: 'topright' }).addTo(window.mapInstance);
 
@@ -176,7 +195,7 @@ export function LeafletMap({
       iconSize: [18, 18],
       iconAnchor: [9, 9]
     });
-    window.userMarker = L.marker([${center.latitude}, ${center.longitude}], {
+    window.userMarker = L.marker([${safeCenter.latitude}, ${safeCenter.longitude}], {
       icon: userIcon,
       zIndexOffset: 2000
     }).addTo(window.mapInstance);
@@ -276,7 +295,7 @@ export function LeafletMap({
   </script>
 </body>
 </html>`;
-  }, [hazards, roadSegments, center.latitude, center.longitude, zoom]);
+  }, [hazards, roadSegments, zoom]);
 
   const handleMessage = (event: any) => {
     try {

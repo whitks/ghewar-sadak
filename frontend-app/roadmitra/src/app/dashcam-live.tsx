@@ -18,7 +18,10 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as Haptics from 'expo-haptics';
 import { AppColors } from '../constants/theme';
 import { Button } from '../components/ui/Button';
+import { UnifiedFusionResultCard } from '../components/UnifiedFusionResultCard';
 import { useTripRecorder } from '../hooks/useTripRecorder';
+import { tripRecorderService } from '../services/tripRecorder';
+import { getActiveBackendUrl, setActiveBackendUrl } from '../services/api';
 import {
   webcamStreamService,
   WebcamServiceState,
@@ -39,14 +42,31 @@ export default function DashcamLiveScreen() {
   const [recentFused, setRecentFused] = useState<FusedEvent[]>([]);
   const [showConfig, setShowConfig] = useState(false);
   const [customIp, setCustomIp] = useState(streamState.cameraIP);
+  const [backendUrlInput, setBackendUrlInput] = useState(getActiveBackendUrl());
   const [isTestingConn, setIsTestingConn] = useState(false);
   const [connFeedback, setConnFeedback] = useState<string | null>(null);
 
   const { speed, gForce, vibrationRms, roadQuality } = useTripRecorder();
 
   const cameraRef = useRef<any>(null);
-  const fusionAlertAnim = useRef(new Animated.Value(0)).current;
-  const [lastFusedBanner, setLastFusedBanner] = useState<FusedEvent | null>(null);
+  const [lastFusedBanner, setLastFusedBanner] = useState<FusedEvent | null>(
+    sensorFusionService.getLatestFusedEvent(),
+  );
+
+  // Ensure 50Hz accelerometer vibration listener is running even if not in a trip yet
+  useEffect(() => {
+    let startedByLive = false;
+    if (!tripRecorderService.isRecording) {
+      tripRecorderService.startTrip().then(() => {
+        startedByLive = true;
+      }).catch(() => {});
+    }
+    return () => {
+      if (startedByLive) {
+        tripRecorderService.stopTrip().catch(() => {});
+      }
+    };
+  }, []);
 
   // Subscribe to webcam stream service
   useEffect(() => {
@@ -60,22 +80,16 @@ export default function DashcamLiveScreen() {
   useEffect(() => {
     const unsub = sensorFusionService.subscribe((event) => {
       setRecentFused((prev) => [event, ...prev].slice(0, 10));
+      setLastFusedBanner(event);
 
       if (event.source === 'both') {
-        setLastFusedBanner(event);
         try {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } catch {}
-
-        Animated.sequence([
-          Animated.timing(fusionAlertAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
-          Animated.delay(2600),
-          Animated.timing(fusionAlertAnim, { toValue: 0, duration: 400, useNativeDriver: true }),
-        ]).start();
       }
     });
     return unsub;
-  }, [fusionAlertAnim]);
+  }, []);
 
   // Periodic frame grabber when using Phone Camera mode
   useEffect(() => {
@@ -94,7 +108,7 @@ export default function DashcamLiveScreen() {
             await webcamStreamService.processCapturedPhoneFrame(photo.uri);
           }
         } catch {}
-      }, 1500);
+      }, 3000);
     }
 
     return () => {
@@ -107,7 +121,7 @@ export default function DashcamLiveScreen() {
     if (streamState.isStreaming) {
       webcamStreamService.stopStream();
     } else {
-      webcamStreamService.startStream();
+      webcamStreamService.startStream(3000);
     }
   };
 
@@ -127,6 +141,11 @@ export default function DashcamLiveScreen() {
     const res = await webcamStreamService.testConnection(customIp);
     setIsTestingConn(false);
     setConnFeedback(res.message);
+  };
+
+  const handleSaveBackendUrl = () => {
+    setActiveBackendUrl(backendUrlInput);
+    Alert.alert('Backend Updated', `AI model server set to: ${getActiveBackendUrl()}`);
   };
 
   return (
@@ -164,17 +183,19 @@ export default function DashcamLiveScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Main Viewfinder Area */}
+      {/* Main Viewfinder Area (Clean live video feed — no bounding boxes over video) */}
       <View style={styles.viewfinderContainer}>
         {streamState.sourceMode === 'phone_camera' ? (
           permission?.granted ? (
-            <CameraView
-              ref={cameraRef}
-              facing="back"
-              style={styles.cameraView}
-            >
+            <>
+              <CameraView
+                ref={cameraRef}
+                facing="back"
+                style={styles.cameraView}
+              />
+
               {/* Overlay HUD */}
-              <View style={styles.hudOverlay}>
+              <View style={styles.hudOverlay} pointerEvents="box-none">
                 <View style={styles.hudPill}>
                   <Ionicons name="radio" size={12} color="#10b981" />
                   <Text style={styles.hudPillText}>Phone Windshield Cam</Text>
@@ -183,7 +204,7 @@ export default function DashcamLiveScreen() {
                   <Text style={styles.hudPillText}>{vibrationRms.toFixed(2)}G RMS</Text>
                 </View>
               </View>
-            </CameraView>
+            </>
           ) : (
             <View style={styles.permissionBox}>
               <Ionicons name="camera-outline" size={44} color={AppColors.primary} />
@@ -215,6 +236,7 @@ export default function DashcamLiveScreen() {
                 </Text>
               </View>
             )}
+
             <View style={styles.hudOverlay}>
               <View style={styles.hudPill}>
                 <Ionicons name="wifi" size={12} color="#06b6d4" />
@@ -226,29 +248,11 @@ export default function DashcamLiveScreen() {
           </View>
         )}
 
-        {/* Real-time Fused Hazard Banner (flashes when Vision + Vibration syncs!) */}
-        {lastFusedBanner && (
-          <Animated.View style={[styles.fusedBanner, { opacity: fusionAlertAnim }]}>
-            <View style={styles.fusedIconCircle}>
-              <Ionicons name="flash" size={18} color="#fff" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <View style={styles.fusedTagRow}>
-                <Text style={styles.fusedBadge}>DUAL-CONFIRMED</Text>
-                <Text style={styles.fusedScore}>
-                  {Math.round(lastFusedBanner.fusedConfidence * 100)}% CONFIDENCE
-                </Text>
-              </View>
-              <Text style={styles.fusedDesc}>{lastFusedBanner.description}</Text>
-            </View>
-          </Animated.View>
-        )}
-
         {/* Processing Indicator */}
         {streamState.isProcessingFrame && (
           <View style={styles.aiBadge}>
             <ActivityIndicator size="small" color="#fff" />
-            <Text style={styles.aiBadgeText}>YOLO AI ANALYZING...</Text>
+            <Text style={styles.aiBadgeText}>SENDING FRAME TO BACKEND MODEL...</Text>
           </View>
         )}
       </View>
@@ -278,6 +282,19 @@ export default function DashcamLiveScreen() {
         </View>
       </View>
 
+      {/* Single Consolidated Sensor Fusion Result (Vision + Vibration in Unison) */}
+      <View style={{ paddingHorizontal: 16, paddingTop: 10 }}>
+        <UnifiedFusionResultCard
+          latestFusedEvent={lastFusedBanner}
+          latestDetections={streamState.latestDetections}
+          vibrationRms={vibrationRms}
+          speedKmh={speed}
+          roadQuality={roadQuality}
+          lastError={streamState.lastError}
+          isProcessingFrame={streamState.isProcessingFrame}
+        />
+      </View>
+
       {/* Control Buttons & Mode Selector */}
       <View style={styles.actionContainer}>
         <Button
@@ -301,6 +318,30 @@ export default function DashcamLiveScreen() {
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false}>
+            {/* Backend AI Model Server Setting */}
+            <View style={styles.presetsBox}>
+              <Text style={styles.presetLabel}>Backend AI Model Server URL:</Text>
+              <Text style={{ fontSize: 11, color: AppColors.textSecondary, marginBottom: 8 }}>
+                Frames are sent via HTTP POST to this endpoint for YOLO & Depth estimation.
+              </Text>
+              <View style={styles.ipInputRow}>
+                <TextInput
+                  style={styles.ipInput}
+                  value={backendUrlInput}
+                  onChangeText={setBackendUrlInput}
+                  placeholder="https://ghewar-sadak.onrender.com"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <TouchableOpacity
+                  style={styles.testBtn}
+                  onPress={handleSaveBackendUrl}
+                >
+                  <Text style={styles.testBtnText}>Save</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
             {/* Mode 1: Phone Windshield Camera */}
             <TouchableOpacity
               style={[
@@ -645,4 +686,65 @@ const styles = StyleSheet.create({
   },
   testBtnText: { color: '#fff', fontSize: 12, fontWeight: '800' },
   feedbackText: { fontSize: 11, color: AppColors.primary, marginTop: 6 },
+
+  // AI Scan Result Panel
+  scanResultCard: {
+    backgroundColor: AppColors.surface,
+    borderTopWidth: 1,
+    borderColor: AppColors.border,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 0,
+  },
+  scanResultHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  scanResultBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: AppColors.accent,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  scanResultBadgeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  scanResultSub: {
+    fontSize: 10,
+    color: AppColors.textSecondary,
+    fontWeight: '600',
+    flexShrink: 1,
+    marginLeft: 8,
+  },
+
+  // Frame clear indicator
+  scanClearCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: AppColors.surface,
+    borderTopWidth: 1,
+    borderColor: AppColors.border,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  scanClearText: {
+    flex: 1,
+    fontSize: 12,
+    color: AppColors.success,
+    fontWeight: '700',
+  },
+  scanClearFrames: {
+    fontSize: 10,
+    color: AppColors.textMuted,
+    fontWeight: '600',
+  },
 });

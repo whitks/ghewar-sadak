@@ -49,6 +49,7 @@ export interface UploadFrameResponse {
   };
   device_id?: string;
   model_used?: string;
+  error?: string;
 }
 
 export interface AnnotateFrameResponse {
@@ -63,8 +64,18 @@ export interface AnnotateFrameResponse {
   annotated_image_base64?: string;
 }
 
-// Set your backend IP (defaults to API_BASE_URL or deployed cloud backend)
-export const BACKEND_URL = API_BASE_URL || 'https://ghewar-sadak.onrender.com';
+// Default backend URL (can be customized at runtime)
+let activeBackendUrl = API_BASE_URL || 'https://ghewar-sadak.onrender.com';
+export let BACKEND_URL = activeBackendUrl;
+
+export function getActiveBackendUrl(): string {
+  return activeBackendUrl;
+}
+
+export function setActiveBackendUrl(url: string): void {
+  activeBackendUrl = url.trim().replace(/\/+$/, '');
+  BACKEND_URL = activeBackendUrl;
+}
 
 function buildUrl(baseUrl: string, path: string): string {
   const cleanBase = baseUrl.replace(/\/+$/, '');
@@ -86,7 +97,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
       delete reqHeaders['Content-Type'];
     }
 
-    const url = buildUrl(BACKEND_URL, path);
+    const url = buildUrl(activeBackendUrl, path);
     const res = await fetch(url, {
       ...options,
       headers: reqHeaders,
@@ -100,7 +111,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 /**
- * Upload a captured dashcam frame with GPS coordinates to the backend.
+ * Upload a captured dashcam frame with GPS coordinates to the hosted backend model.
  * Uses native FileSystem.uploadAsync on iOS/Android to bypass JS FormData limitations.
  */
 export async function uploadDashcamFrame(
@@ -110,34 +121,80 @@ export async function uploadDashcamFrame(
   model: string = 'fast',
   conf: number = 0.15
 ): Promise<UploadFrameResponse> {
-  const uploadUrl = buildUrl(BACKEND_URL, '/api/upload-frame');
+  const uploadUrl = buildUrl(activeBackendUrl, '/api/upload-frame');
 
   try {
-    if (Platform.OS !== 'web') {
-      const uploadResult = await FileSystem.uploadAsync(uploadUrl, imageUri, {
-        fieldName: 'file',
-        httpMethod: 'POST',
-        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-        parameters: {
-          latitude: gps.latitude.toString(),
-          longitude: gps.longitude.toString(),
-          altitude: (gps.altitude ?? 0).toString(),
-          speed_kmh: (gps.speed ?? 0).toString(),
-          device_id: deviceId,
-          timestamp: new Date().toISOString(),
-          model: model,
-          conf: conf.toString(),
-        },
-        headers: {
-          Accept: 'application/json',
-          'X-API-Key': API_KEY,
-        },
-      });
+    let localFileUri = imageUri;
+    let isTempFile = false;
 
-      if (uploadResult.status >= 200 && uploadResult.status < 300) {
-        return JSON.parse(uploadResult.body);
+    // 1. If imageUri is an HTTP/HTTPS remote URL (e.g. Wi-Fi dashcam snapshot http://192.168.1.1/cgi-bin/snapshot.cgi),
+    // ExponentFileSystem.uploadAsync cannot read remote URLs as local files.
+    // Download to local cache directory first, or cleanly fallback if camera Wi-Fi is unreachable.
+    if (imageUri.startsWith('http://') || imageUri.startsWith('https://')) {
+      const tempPath = `${FileSystem.cacheDirectory}dashcam_snap_${Date.now()}.jpg`;
+      try {
+        const dl = await FileSystem.downloadAsync(imageUri, tempPath);
+        if (dl.status >= 200 && dl.status < 300) {
+          localFileUri = dl.uri;
+          isTempFile = true;
+        } else {
+          return {
+            status: 'error',
+            frame_id: '',
+            timestamp: new Date().toISOString(),
+            potholes_found: 0,
+            detections: [],
+            annotated_image_url: '',
+            raw_image_url: imageUri,
+            error: `Failed to download camera snapshot: HTTP ${dl.status}`,
+          };
+        }
+      } catch (err: any) {
+        return {
+          status: 'error',
+          frame_id: '',
+          timestamp: new Date().toISOString(),
+          potholes_found: 0,
+          detections: [],
+          annotated_image_url: '',
+          raw_image_url: imageUri,
+          error: `Camera stream unreachable: ${err?.message || 'offline'}`,
+        };
       }
-      throw new Error(`Upload failed (${uploadResult.status}): ${uploadResult.body}`);
+    }
+
+    if (Platform.OS !== 'web') {
+      try {
+        const uploadResult = await FileSystem.uploadAsync(uploadUrl, localFileUri, {
+          fieldName: 'file',
+          httpMethod: 'POST',
+          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+          parameters: {
+            latitude: gps.latitude.toString(),
+            longitude: gps.longitude.toString(),
+            altitude: (gps.altitude ?? 0).toString(),
+            speed_kmh: (gps.speed ?? 0).toString(),
+            device_id: deviceId,
+            timestamp: new Date().toISOString(),
+            model,
+            conf: conf.toString(),
+            run_depth: 'true',
+          },
+          headers: {
+            Accept: 'application/json',
+            'X-API-Key': API_KEY,
+          },
+        });
+
+        if (uploadResult.status >= 200 && uploadResult.status < 300) {
+          return JSON.parse(uploadResult.body);
+        }
+        throw new Error(`Upload failed (HTTP ${uploadResult.status})`);
+      } finally {
+        if (isTempFile) {
+          FileSystem.deleteAsync(localFileUri, { idempotent: true }).catch(() => {});
+        }
+      }
     } else {
       const cleanUri = imageUri.split('?')[0].split('#')[0];
       const filename = cleanUri.split('/').pop() || 'dashcam_frame.jpg';
@@ -154,6 +211,7 @@ export async function uploadDashcamFrame(
       formData.append('timestamp', new Date().toISOString());
       formData.append('model', model);
       formData.append('conf', conf.toString());
+      formData.append('run_depth', 'true');
 
       const response = await fetch(uploadUrl, {
         method: 'POST',
@@ -167,49 +225,19 @@ export async function uploadDashcamFrame(
       if (response.ok) {
         return await response.json();
       }
-      throw new Error(`Upload failed (${response.status})`);
+      throw new Error(`Upload failed (HTTP ${response.status})`);
     }
   } catch (err: any) {
-    console.warn('[Dashcam] Remote API upload failed, using on-device inference fallback:', err?.message || err);
-
-    // Seamless on-device inference fallback so dashcam works smoothly anytime
-    const randomPothole = Math.random() > 0.45;
-    const detections: PotholeDetection[] = randomPothole
-      ? [
-          {
-            id: Date.now() % 1000,
-            class_name: 'pothole',
-            confidence: Number((0.78 + Math.random() * 0.18).toFixed(2)),
-            bbox: [
-              Math.round(200 + Math.random() * 80),
-              Math.round(350 + Math.random() * 60),
-              Math.round(480 + Math.random() * 90),
-              Math.round(560 + Math.random() * 70),
-            ],
-            estimated_depth_cm: Number((4.5 + Math.random() * 6).toFixed(1)),
-            depth_class: 'Deep (>5cm)',
-            severity: Math.random() > 0.5 ? 'High' : 'Moderate',
-            repair_urgency: 'Fix within 48h',
-            distance_meters: Number((8 + Math.random() * 12).toFixed(1)),
-          },
-        ]
-      : [];
-
+    console.warn('[Dashcam API] Backend upload error:', err?.message || err);
     return {
-      status: 'success',
-      frame_id: `frame-${Date.now()}`,
+      status: 'error',
+      frame_id: '',
       timestamp: new Date().toISOString(),
-      potholes_found: detections.length,
-      detections,
+      potholes_found: 0,
+      detections: [],
       annotated_image_url: '',
       raw_image_url: imageUri,
-      gps: {
-        latitude: gps.latitude,
-        longitude: gps.longitude,
-        altitude: gps.altitude ?? 0,
-        speed_kmh: gps.speed ?? 0,
-      },
-      device_id: deviceId,
+      error: err?.message || 'Could not connect to backend model',
     };
   }
 }
@@ -303,7 +331,7 @@ export async function getNearbyPotholes(
     lon: longitude.toString(),
     radius_km: radiusKm.toString(),
   });
-  const url = buildUrl(BACKEND_URL, `/api/potholes/nearby?${params.toString()}`);
+  const url = buildUrl(activeBackendUrl, `/api/potholes/nearby?${params.toString()}`);
   const response = await fetch(url, {
     headers: {
       Accept: 'application/json',
@@ -320,7 +348,7 @@ export async function getNearbyPotholes(
  * Get overall pothole statistics and counts.
  */
 export async function getPotholeStats(): Promise<any> {
-  const url = buildUrl(BACKEND_URL, '/api/stats');
+  const url = buildUrl(activeBackendUrl, '/api/stats');
   const response = await fetch(url, {
     headers: {
       Accept: 'application/json',
