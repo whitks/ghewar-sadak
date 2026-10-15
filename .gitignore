@@ -10,11 +10,21 @@ backend/uploads/frames/frame_*.jpg
 backend/uploads/annotated/annotated_*.jpg
 backend/uploads/annotated/snapshot_*.jpg
 
-# Node / Expo
+# Node / Expo / Web
 frontend-app/roadmitra/node_modules/
 frontend-app/roadmitra/.expo/
 frontend-app/roadmitra/dist/
 frontend-app/roadmitra/web-build/
+web-dashboard/node_modules/
+web-dashboard/dist/
+web-dashboard/.vite/
+
+# Experiments
+pothole-cv-experiment/
+yolo26-experiment/
+
+# Agents / IDE
+.agents/
 
 # OS
 .DS_Store

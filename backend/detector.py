@@ -2,9 +2,8 @@
 
 Handles:
 - Multi-Model Support:
-  * "fast": Real-Time Lightweight Pothole Detector (from pothole-cv-experiment) ~15ms latency
-  * "accurate": Multi-Class Road Defect Detector (from model/final-classification) - Cracks, Potholes, Road Distress
-  * "yolo26": CRDDC fine-tuned road damage detection model
+  * "fast": Real-Time Lightweight Pothole Detector (~15ms latency)
+  * "accurate": Multi-Class Road Defect Detector (Cracks, Potholes, Road Distress)
 - Real-Time Frame Annotation (High FPS JPEG encoding with metadata headers)
 - Monocular Depth Estimation via Depth Anything V2 (optional) or Real-Time Heuristic
 - Always processes ALL defect classes (never filters to potholes only)
@@ -18,42 +17,43 @@ import cv2
 import numpy as np
 import torch
 
-# ── Patch Ultralytics AAttn for YOLOv12s Compatibility ────────────────────────
 import ultralytics.nn.modules.block as block
 from ultralytics import YOLO
 
-orig_forward = block.AAttn.forward
+# Patch Ultralytics AAttn for models trained with split (qk, v) attention layers
+if hasattr(block, 'AAttn') and hasattr(block.AAttn, 'forward'):
+    orig_aattn_forward = block.AAttn.forward
 
+    def patched_aattn_forward(self, x: torch.Tensor) -> torch.Tensor:
+        if hasattr(self, 'qk'):
+            B, _, H, W = x.shape
+            N = H * W
+            qkv = torch.cat([self.qk(x), self.v(x)], dim=1).flatten(2).transpose(1, 2)
+            if hasattr(self, 'area') and self.area > 1:
+                qkv = qkv.reshape(B * self.area, N // self.area, self.all_head_dim * 3)
+                B, N, _ = qkv.shape
+            q, k, v = (
+                qkv.view(B, N, self.num_heads, self.head_dim * 3)
+                .permute(0, 2, 3, 1)
+                .split([self.head_dim, self.head_dim, self.head_dim], dim=2)
+            )
+            attn = (q.transpose(-2, -1) @ k) * (self.head_dim**-0.5)
+            attn = attn.softmax(dim=-1)
+            x = v @ attn.transpose(-2, -1)
+            x = x.permute(0, 3, 1, 2)
+            v = v.permute(0, 3, 1, 2)
+            if hasattr(self, 'area') and self.area > 1:
+                x = x.reshape(B // self.area, N * self.area, self.all_head_dim)
+                v = v.reshape(B // self.area, N * self.area, self.all_head_dim)
+                B, N, _ = x.shape
+            x = x.reshape(B, H, W, self.all_head_dim).permute(0, 3, 1, 2).contiguous()
+            v = v.reshape(B, H, W, self.all_head_dim).permute(0, 3, 1, 2).contiguous()
+            if hasattr(self, 'pe'):
+                x = x + self.pe(v)
+            return self.proj(x)
+        return orig_aattn_forward(self, x)
 
-def patched_forward(self, x: torch.Tensor) -> torch.Tensor:
-    if hasattr(self, 'qk'):
-        B, _, H, W = x.shape
-        N = H * W
-        qkv = torch.cat([self.qk(x), self.v(x)], dim=1).flatten(2).transpose(1, 2)
-        if self.area > 1:
-            qkv = qkv.reshape(B * self.area, N // self.area, self.all_head_dim * 3)
-            B, N, _ = qkv.shape
-        q, k, v = (
-            qkv.view(B, N, self.num_heads, self.head_dim * 3)
-            .permute(0, 2, 3, 1)
-            .split([self.head_dim, self.head_dim, self.head_dim], dim=2)
-        )
-        attn = (q.transpose(-2, -1) @ k) * (self.head_dim**-0.5)
-        attn = attn.softmax(dim=-1)
-        x = v @ attn.transpose(-2, -1)
-        x = x.permute(0, 3, 1, 2)
-        v = v.permute(0, 3, 1, 2)
-        if self.area > 1:
-            x = x.reshape(B // self.area, N * self.area, self.all_head_dim)
-            v = v.reshape(B // self.area, N * self.area, self.all_head_dim)
-            B, N, _ = x.shape
-        x = x.reshape(B, H, W, self.all_head_dim).permute(0, 3, 1, 2).contiguous()
-        v = v.reshape(B, H, W, self.all_head_dim).permute(0, 3, 1, 2).contiguous()
-        x = x + self.pe(v)
-        return self.proj(x)
-    return orig_forward(self, x)
-
-block.AAttn.forward = patched_forward
+    block.AAttn.forward = patched_aattn_forward
 
 # Import depth classifier
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -92,10 +92,14 @@ class PotholeDetectorEngine:
 
     def __init__(self, default_model: str = "fast"):
         # Model path registry
+        fast_path = ROOT_DIR / "model" / "fast" / "best.pt"
+        if not fast_path.exists():
+            fast_path = ROOT_DIR / "pothole-cv-experiment" / "best.pt"
+
         self.model_registry: Dict[str, Dict[str, Any]] = {
             "fast": {
                 "name": "Fast Pothole Detector (High-FPS Real-Time)",
-                "path": ROOT_DIR / "pothole-cv-experiment" / "best.pt",
+                "path": fast_path,
                 "default_conf": 0.15,
                 "description": "Optimized lightweight model for real-time video/camera streaming (15-25ms latency)",
                 "classes": ["Pothole"],
@@ -106,54 +110,58 @@ class PotholeDetectorEngine:
                 "default_conf": 0.15,
                 "description": "Comprehensive road distress detector (Longitudinal Crack, Transverse Crack, Alligator Crack, Pothole, Other)",
                 "classes": ["Longitudinal Crack", "Transverse Crack", "Alligator Crack", "Pothole", "Other"],
-            },
-            "yolo26": {
-                "name": "YOLO26s CRDDC Road Damage Detection Model",
-                "path": ROOT_DIR / "yolo26-experiment" / "YOLO26s_RDD_Base.pt",
-                "default_conf": 0.15,
-                "description": "CRDDC challenge trained detector (84.5% pothole precision)",
-                "classes": ["Longitudinal Crack", "Transverse Crack", "Alligator Crack", "Pothole"],
             }
         }
 
         # Loaded model instances cache
         self.loaded_models: Dict[str, YOLO] = {}
 
-        # Preload the default model
-        self.default_key = self.resolve_model_key(default_model)
-        self.get_model(self.default_key)
+        # Resolve requested default key or find first available model on disk
+        requested_key = self.resolve_model_key(default_model)
+        self.default_key = self.get_available_key(requested_key)
+        self.model = self.get_model(self.default_key)
 
         # Backwards compatibility attributes
         self.model_path = self.model_registry[self.default_key]["path"]
-        self.model = self.loaded_models[self.default_key]
 
     def resolve_model_key(self, model_name: Optional[str]) -> str:
-        """Normalize user input to a canonical model key: 'fast', 'accurate', or 'yolo26'."""
+        """Normalize user input to a canonical model key: 'fast' or 'accurate'."""
         if not model_name:
             return "fast"
         s = str(model_name).lower().strip()
-        if any(k in s for k in ["acc", "slow", "multi", "class", "final"]):
+        if any(k in s for k in ["acc", "slow", "multi", "class", "final", "deep"]):
             return "accurate"
-        if any(k in s for k in ["yolo26", "rdd", "26"]):
-            return "yolo26"
         return "fast"
 
+    def get_available_key(self, preferred_key: str = "fast") -> str:
+        """Return preferred_key if weights exist on disk, otherwise the first existing model in registry."""
+        key = self.resolve_model_key(preferred_key)
+        reg = self.model_registry.get(key)
+        if reg and reg["path"].exists():
+            return key
+        # Fallback to any existing model in registry
+        for k, v in self.model_registry.items():
+            if v["path"].exists():
+                return k
+        return key
+
     def get_model(self, model_key: str) -> YOLO:
-        """Fetch or lazy-load the requested YOLO model from cache."""
+        """Fetch or lazy-load the requested YOLO model from cache with robust fallback."""
         key = self.resolve_model_key(model_key)
         if key not in self.loaded_models:
             reg = self.model_registry.get(key)
             if not reg or not reg["path"].exists():
-                # Fallback to any existing model in registry
-                fallback = next((k for k, v in self.model_registry.items() if v["path"].exists()), None)
-                if not fallback:
+                fallback = self.get_available_key("accurate" if key == "fast" else "fast")
+                reg = self.model_registry.get(fallback)
+                if not reg or not reg["path"].exists():
                     raise FileNotFoundError("No trained YOLO model weights found in repository.")
+                print(f"⚠️ Requested model '{key}' not found on disk. Falling back to '{fallback}'.")
                 key = fallback
-                reg = self.model_registry[key]
 
-            print(f"⏳ Loading YOLO [{key}] from: {reg['path']} ...")
-            self.loaded_models[key] = YOLO(str(reg["path"]))
-            print(f"  YOLO [{key}] loaded successfully. Classes: {self.loaded_models[key].names}")
+            if key not in self.loaded_models:
+                print(f"⏳ Loading YOLO [{key}] from: {reg['path']} ...")
+                self.loaded_models[key] = YOLO(str(reg["path"]))
+                print(f"  YOLO [{key}] loaded successfully. Classes: {self.loaded_models[key].names}")
 
         return self.loaded_models[key]
 
