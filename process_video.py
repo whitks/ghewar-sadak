@@ -247,7 +247,8 @@ def main():
                     best_depth_disp = disp_map.copy()
 
             # Log to DB periodically on keyframes
-            if run_depth and conf >= 0.20:
+            should_log = (run_depth or (frame_idx % args.depth_interval == 0 or frame_idx == 1)) and conf >= 0.20
+            if should_log:
                 record = {
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "image_name": f"{video_path.name} (frame {frame_idx})",
