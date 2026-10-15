@@ -19,7 +19,44 @@ from pathlib import Path
 import time
 import cv2
 import numpy as np
+import torch
+import ultralytics.nn.modules.block as block
 from ultralytics import YOLO
+
+# Patch Ultralytics AAttn for models trained with split (qk, v) attention layers
+if hasattr(block, 'AAttn') and hasattr(block.AAttn, 'forward'):
+    orig_aattn_forward = block.AAttn.forward
+
+    def patched_aattn_forward(self, x: torch.Tensor) -> torch.Tensor:
+        if hasattr(self, 'qk'):
+            B, _, H, W = x.shape
+            N = H * W
+            qkv = torch.cat([self.qk(x), self.v(x)], dim=1).flatten(2).transpose(1, 2)
+            if hasattr(self, 'area') and self.area > 1:
+                qkv = qkv.reshape(B * self.area, N // self.area, self.all_head_dim * 3)
+                B, N, _ = qkv.shape
+            q, k, v = (
+                qkv.view(B, N, self.num_heads, self.head_dim * 3)
+                .permute(0, 2, 3, 1)
+                .split([self.head_dim, self.head_dim, self.head_dim], dim=2)
+            )
+            attn = (q.transpose(-2, -1) @ k) * (self.head_dim**-0.5)
+            attn = attn.softmax(dim=-1)
+            x = v @ attn.transpose(-2, -1)
+            x = x.permute(0, 3, 1, 2)
+            v = v.permute(0, 3, 1, 2)
+            if hasattr(self, 'area') and self.area > 1:
+                x = x.reshape(B // self.area, N * self.area, self.all_head_dim)
+                v = v.reshape(B // self.area, N * self.area, self.all_head_dim)
+                B, N, _ = x.shape
+            x = x.reshape(B, H, W, self.all_head_dim).permute(0, 3, 1, 2).contiguous()
+            v = v.reshape(B, H, W, self.all_head_dim).permute(0, 3, 1, 2).contiguous()
+            if hasattr(self, 'pe'):
+                x = x + self.pe(v)
+            return self.proj(x)
+        return orig_aattn_forward(self, x)
+
+    block.AAttn.forward = patched_aattn_forward
 
 # Dynamic path resolution to work from root or model/
 BASE_DIR = Path(__file__).resolve().parent
