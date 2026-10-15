@@ -536,4 +536,39 @@ export const api = {
   annotateFrame,
   getNearbyPotholes,
   getPotholeStats,
+  getDatabasePotholes,
 };
+
+export async function getDatabasePotholes(): Promise<Hazard[]> {
+  try {
+    const res = await apiFetch<{ data: any[] }>('/api/potholes?limit=100');
+    if (res && Array.isArray(res.data) && res.data.length > 0) {
+      return res.data.map((r) => {
+        const depth = Number(r.estimated_depth_cm || 5);
+        const sevStr = String(r.severity || 'High');
+        const sevNum = sevStr.toLowerCase() === 'high' ? 85 : sevStr.toLowerCase() === 'moderate' ? 60 : 35;
+        const conf = Number(r.confidence || 0.75);
+        return {
+          id: `db-pothole-${r.id}`,
+          lat: Number(r.latitude),
+          lon: Number(r.longitude),
+          type: 'pothole',
+          status: 'confirmed',
+          confidence: conf,
+          severity: sevNum,
+          source: 'camera',
+          cameraScore: conf,
+          phoneScore: Number(Math.min(0.95, 0.40 + (conf * 0.5)).toFixed(2)),
+          deviceCount: 1,
+          lastSeen: r.timestamp || new Date().toISOString(),
+          description: `Pothole from video footage (~${depth}cm depth, ${sevStr} Severity) - ${r.notes || ''}`,
+          magnitude: Number(Math.min(2.5, Math.max(1.1, depth * 0.12 + 0.9)).toFixed(2)),
+          speedKmh: Number(r.speed_kmh || 35),
+        };
+      });
+    }
+  } catch (err) {
+    console.log('[api] /api/potholes fetch note (using bundled db data):', err);
+  }
+  return [];
+}

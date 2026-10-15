@@ -15,7 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
-DB_PATH = Path(__file__).resolve().parent / "potholes.db"
+ROOT_DB = Path(__file__).resolve().parent.parent / "potholes.db"
+DB_PATH = ROOT_DB if ROOT_DB.exists() else Path(__file__).resolve().parent / "potholes.db"
 
 
 def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:

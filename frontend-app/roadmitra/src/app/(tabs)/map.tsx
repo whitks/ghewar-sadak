@@ -16,16 +16,20 @@ import {
   PCI_COLORS,
   RoadQualityGrade,
 } from '../../services/roadMemoryService';
+import {
+  DB_POTHOLES_HAZARDS,
+  DB_ROAD_SEGMENT,
+  DB_CENTER_COORDS,
+  DB_ROAD_PCI,
+} from '../../services/dbPotholesData';
+import { getDatabasePotholes } from '../../services/api';
 import { HAZARD_LABELS, HAZARD_VECTOR_ICONS } from '../../constants/hazardTypes';
 import { AppColors } from '../../constants/theme';
 import { Button } from '../../components/ui/Button';
 import { LeafletMap } from '../../components/LeafletMap';
 import { tripRecorderService } from '../../services/tripRecorder';
 
-const DEFAULT_COORDS = {
-  latitude: 28.6139,
-  longitude: 77.2090,
-};
+const DEFAULT_COORDS = DB_CENTER_COORDS;
 
 type FilterType = 'all' | 'camera' | 'phone' | 'both';
 type TableFilterType = 'all' | 'recurring' | 'very_poor' | 'poor' | 'fair' | 'good';
@@ -59,17 +63,28 @@ export default function MapScreen() {
       setStoredTripsList(validTrips);
       const allTrips = [...validTrips, ...MOCK_TRIPS];
 
-      // Exclude any deleted hazards
+      // 1. Filter existing stored hazards excluding any deleted ones
       const validStored = (storedHazards || []).filter((h) => Boolean(h && h.id && !deletedIds.has(h.id)));
 
-      // Generate a small, sparse set of defect points situated directly on the road corridor lines
-      const center = userLocation || DEFAULT_COORDS;
-      const lineHazards = generateSparseRoadLineHazards(center, deletedIds);
+      // 2. Load detections from potholes.db (22 detections with severity, depth & GPS)
+      const dbHazards = DB_POTHOLES_HAZARDS.filter((h) => !deletedIds.has(h.id));
 
+      // 3. Save to app storage path so it is permanently persisted
+      if (dbHazards.length > 0 && validStored.length === 0) {
+        await storage.saveHazards(dbHazards);
+      }
+
+      // Merge stored hazards and db hazards
       const storedIds = new Set(validStored.map((h) => h.id));
-      const remainingLine = lineHazards.filter((h) => !storedIds.has(h.id));
-      const allHazards = [...validStored, ...remainingLine];
+      const remainingDb = dbHazards.filter((h) => !storedIds.has(h.id));
+      const mergedDbHazards = [...validStored, ...remainingDb];
 
+      // 4. Generate sparse line points along corridor lines
+      const mergedIds = new Set(mergedDbHazards.map((h) => h.id));
+      const center = userLocation || DEFAULT_COORDS;
+      const lineHazards = generateSparseRoadLineHazards(center, deletedIds).filter((h) => !mergedIds.has(h.id));
+
+      const allHazards = [...mergedDbHazards, ...lineHazards];
       setHazards(allHazards);
 
       // Segment continuous visited roads into ~100m slices colored by safety severity
@@ -148,37 +163,41 @@ export default function MapScreen() {
     return generateRoadMemorySegments(center, hazards, storedTripsList);
   }, [userLocation, hazards, storedTripsList]);
 
-  // Combined road segments shown on the Leaflet map
+  // Combined road segments shown on the Leaflet map including potholes.db route
   const displaySegments = useMemo(() => {
-    return [...memorySegments, ...roadSegments];
+    return [DB_ROAD_SEGMENT, ...memorySegments, ...roadSegments];
   }, [memorySegments, roadSegments]);
+
+  const allCorridorSegments = useMemo(() => {
+    return [DB_ROAD_SEGMENT, ...memorySegments];
+  }, [memorySegments]);
 
   // Road Memory & PCI Analytics metrics
   const avgPci = useMemo(() => {
-    if (memorySegments.length === 0) return 0;
-    const sum = memorySegments.reduce((acc, s) => acc + s.pciScore, 0);
-    return Math.round(sum / memorySegments.length);
-  }, [memorySegments]);
+    if (allCorridorSegments.length === 0) return 0;
+    const sum = allCorridorSegments.reduce((acc, s) => acc + s.pciScore, 0);
+    return Math.round(sum / allCorridorSegments.length);
+  }, [allCorridorSegments]);
 
   const goodCount = useMemo(
-    () => memorySegments.filter((s) => s.quality === 'good').length,
-    [memorySegments]
+    () => allCorridorSegments.filter((s) => s.quality === 'good').length,
+    [allCorridorSegments]
   );
   const fairCount = useMemo(
-    () => memorySegments.filter((s) => s.quality === 'fair').length,
-    [memorySegments]
+    () => allCorridorSegments.filter((s) => s.quality === 'fair').length,
+    [allCorridorSegments]
   );
   const poorCount = useMemo(
-    () => memorySegments.filter((s) => s.quality === 'poor').length,
-    [memorySegments]
+    () => allCorridorSegments.filter((s) => s.quality === 'poor').length,
+    [allCorridorSegments]
   );
   const veryPoorCount = useMemo(
-    () => memorySegments.filter((s) => s.quality === 'very_poor').length,
-    [memorySegments]
+    () => allCorridorSegments.filter((s) => s.quality === 'very_poor').length,
+    [allCorridorSegments]
   );
   const recurringCount = useMemo(
-    () => memorySegments.filter((s) => s.isRecurringHotspot).length,
-    [memorySegments]
+    () => allCorridorSegments.filter((s) => s.isRecurringHotspot).length,
+    [allCorridorSegments]
   );
 
   const filteredHazards = hazards.filter((h) =>
@@ -186,10 +205,10 @@ export default function MapScreen() {
   );
 
   const filteredTableSegments = useMemo(() => {
-    if (tableFilter === 'all') return memorySegments;
-    if (tableFilter === 'recurring') return memorySegments.filter((s) => s.isRecurringHotspot);
-    return memorySegments.filter((s) => s.quality === tableFilter);
-  }, [memorySegments, tableFilter]);
+    if (tableFilter === 'all') return allCorridorSegments;
+    if (tableFilter === 'recurring') return allCorridorSegments.filter((s) => s.isRecurringHotspot);
+    return allCorridorSegments.filter((s) => s.quality === tableFilter);
+  }, [allCorridorSegments, tableFilter]);
 
   const handleRecenter = async () => {
     try {
@@ -367,6 +386,18 @@ export default function MapScreen() {
                   activeOpacity={0.85}
                 >
                   <Ionicons name="locate" size={20} color={AppColors.primary} />
+                </TouchableOpacity>
+
+                {/* Center on potholes.db button */}
+                <TouchableOpacity
+                  style={styles.floatingDbPill}
+                  onPress={() => setUserLocation(DB_CENTER_COORDS)}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="server" size={13} color="#EF4444" />
+                  <Text style={styles.floatingDbText}>
+                    potholes.db · 22 Potholes (PCI 15 · Critical Severity)
+                  </Text>
                 </TouchableOpacity>
 
                 {/* Road Memory Quick Status Chip (Floating on map) */}
@@ -1689,5 +1720,29 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 18,
   },
+  floatingDbPill: {
+    position: 'absolute',
+    top: 14,
+    left: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#fff',
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: '#FCA5A5',
+    shadowColor: '#000',
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  floatingDbText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#991B1B',
+  },
 });
+
 

@@ -32,6 +32,7 @@ export interface RoadMemorySegment {
   repairHistory: RepairRecord[];
   isRecurringHotspot: boolean;
   isSimulated?: boolean;
+  isFromDatabase?: boolean;
 }
 
 export const PCI_COLORS: Record<RoadQualityGrade, string> = {

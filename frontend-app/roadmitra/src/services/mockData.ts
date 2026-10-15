@@ -18,6 +18,7 @@ export interface Hazard {
   photoUri?: string;
   magnitude?: number;
   speedKmh?: number;
+  estimatedDepthCm?: number;
 }
 
 export interface TripImage {
