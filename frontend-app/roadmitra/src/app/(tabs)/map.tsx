@@ -12,6 +12,7 @@ import { RoadSegment, generateAllRoadSegments } from '../../services/roadSegment
 import {
   RoadMemorySegment,
   generateRoadMemorySegments,
+  generateSparseRoadLineHazards,
   PCI_COLORS,
   RoadQualityGrade,
 } from '../../services/roadMemoryService';
@@ -31,7 +32,7 @@ type TableFilterType = 'all' | 'recurring' | 'very_poor' | 'poor' | 'fair' | 'go
 
 export default function MapScreen() {
   const [filter, setFilter] = useState<FilterType>('all');
-  const [hazards, setHazards] = useState<Hazard[]>(MOCK_HAZARDS);
+  const [hazards, setHazards] = useState<Hazard[]>([]);
   const [roadSegments, setRoadSegments] = useState<RoadSegment[]>([]);
   const [storedTripsList, setStoredTripsList] = useState<Trip[]>([]);
   const [selectedHazard, setSelectedHazard] = useState<Hazard | null>(null);
@@ -50,6 +51,7 @@ export default function MapScreen() {
     try {
       const storedHazards = await storage.getHazards();
       const storedTrips = await storage.getTrips();
+      const deletedIds = new Set(await storage.getDeletedHazardIds());
 
       const validTrips = (storedTrips || []).filter(
         (t): t is Trip => Boolean(t && t.id && (t.distanceKm === undefined || t.distanceKm >= 0.05))
@@ -57,12 +59,16 @@ export default function MapScreen() {
       setStoredTripsList(validTrips);
       const allTrips = [...validTrips, ...MOCK_TRIPS];
 
-      let allHazards: Hazard[] = MOCK_HAZARDS;
-      if (storedHazards && storedHazards.length > 0) {
-        const storedIds = new Set(storedHazards.map((h) => h.id));
-        const remainingMock = MOCK_HAZARDS.filter((h) => !storedIds.has(h.id));
-        allHazards = [...storedHazards, ...remainingMock];
-      }
+      // Exclude any deleted hazards
+      const validStored = (storedHazards || []).filter((h) => Boolean(h && h.id && !deletedIds.has(h.id)));
+
+      // Generate a small, sparse set of defect points situated directly on the road corridor lines
+      const center = userLocation || DEFAULT_COORDS;
+      const lineHazards = generateSparseRoadLineHazards(center, deletedIds);
+
+      const storedIds = new Set(validStored.map((h) => h.id));
+      const remainingLine = lineHazards.filter((h) => !storedIds.has(h.id));
+      const allHazards = [...validStored, ...remainingLine];
 
       setHazards(allHazards);
 
@@ -72,7 +78,7 @@ export default function MapScreen() {
     } catch (err) {
       console.warn('Failed loading stored hazards and routes:', err);
     }
-  }, []);
+  }, [userLocation]);
 
   useFocusEffect(
     useCallback(() => {
@@ -413,13 +419,28 @@ export default function MapScreen() {
                   </View>
                 )}
 
-                <Button
-                  title="Inspect Confidence & Scores"
-                  variant="primary"
-                  size="sm"
-                  icon="analytics-outline"
-                  onPress={() => router.push(`/hazard/${selectedHazard.id}`)}
-                />
+                <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+                  <View style={{ flex: 1 }}>
+                    <Button
+                      title="Inspect Details"
+                      variant="primary"
+                      size="sm"
+                      icon="analytics-outline"
+                      onPress={() => router.push(`/hazard/${selectedHazard.id}`)}
+                    />
+                  </View>
+                  <Button
+                    title="Delete"
+                    variant="destructive"
+                    size="sm"
+                    icon="trash-outline"
+                    onPress={async () => {
+                      await storage.deleteHazard(selectedHazard.id);
+                      setSelectedHazard(null);
+                      await loadHazardsAndRoutes();
+                    }}
+                  />
+                </View>
               </View>
             )}
           </View>
@@ -572,57 +593,99 @@ export default function MapScreen() {
         ) : (
           /* Individual Hazards & Sensor Defects List */
           <ScrollView contentContainerStyle={styles.listContainer}>
-            {filteredHazards.map((h) => {
-              const confidencePct = Math.round(h.confidence * 100);
-              const confidenceColor =
-                h.confidence >= 0.75
-                  ? AppColors.success
-                  : h.confidence >= 0.5
-                  ? AppColors.warning
-                  : AppColors.danger;
-              return (
+            <View style={styles.defectsActionBar}>
+              <Text style={styles.defectsCountLabel}>
+                {filteredHazards.length} Road Defect{filteredHazards.length !== 1 ? 's' : ''} on Corridors
+              </Text>
+              {filteredHazards.length > 0 && (
                 <TouchableOpacity
-                  key={h.id}
-                  style={styles.hazardCard}
-                  onPress={() => router.push(`/hazard/${h.id}`)}
-                  activeOpacity={0.85}
+                  style={styles.clearAllBtn}
+                  onPress={async () => {
+                    await storage.clearAllHazards();
+                    await loadHazardsAndRoutes();
+                  }}
+                  activeOpacity={0.8}
                 >
-                  {h.photoUri ? (
-                    <Image source={{ uri: h.photoUri }} style={styles.listThumb} />
-                  ) : (
-                    <View style={styles.calloutIconBox}>
-                      <MaterialCommunityIcons
-                        name={HAZARD_VECTOR_ICONS[h.type] || 'alert-circle'}
-                        size={22}
-                        color={AppColors.primary}
-                      />
-                    </View>
-                  )}
-                  <View style={{ flex: 1, gap: 2 }}>
-                    <Text style={styles.calloutTitle}>{HAZARD_LABELS[h.type]}</Text>
-                    <Text style={styles.calloutSub}>
-                      {h.source === 'both'
-                        ? 'Vision AI + Phone IMU'
-                        : h.source === 'camera'
-                        ? 'Vision AI Photo'
-                        : 'Phone Accelerometer'}
-                      {' · '}{h.deviceCount} device{h.deviceCount !== 1 ? 's' : ''}
-                    </Text>
-                    {h.magnitude && (
-                      <Text style={styles.shockListText}>
-                        ⚡ {h.magnitude}G shock {h.speedKmh ? `@ ${Math.round(h.speedKmh)} km/h` : ''}
-                      </Text>
-                    )}
-                  </View>
-                  <View style={{ alignItems: 'flex-end' }}>
-                    <Text style={[styles.confidenceNum, { color: confidenceColor }]}>
-                      {confidencePct}%
-                    </Text>
-                    <Text style={styles.confidenceLabel}>CONFIDENCE</Text>
-                  </View>
+                  <Ionicons name="trash-outline" size={13} color="#EF4444" />
+                  <Text style={styles.clearAllBtnText}>Clear All</Text>
                 </TouchableOpacity>
-              );
-            })}
+              )}
+            </View>
+
+            {filteredHazards.length === 0 ? (
+              <View style={styles.emptyDefectsBox}>
+                <Ionicons name="shield-checkmark-outline" size={42} color={AppColors.success} />
+                <Text style={styles.emptyDefectsTitle}>All Defect Points Cleared</Text>
+                <Text style={styles.emptyDefectsSub}>
+                  No defects logged on this corridor. New defects will appear when detected during Drive Mode.
+                </Text>
+              </View>
+            ) : (
+              filteredHazards.map((h) => {
+                const confidencePct = Math.round(h.confidence * 100);
+                const confidenceColor =
+                  h.confidence >= 0.75
+                    ? AppColors.success
+                    : h.confidence >= 0.5
+                    ? AppColors.warning
+                    : AppColors.danger;
+                return (
+                  <TouchableOpacity
+                    key={h.id}
+                    style={styles.hazardCard}
+                    onPress={() => router.push(`/hazard/${h.id}`)}
+                    activeOpacity={0.85}
+                  >
+                    {h.photoUri ? (
+                      <Image source={{ uri: h.photoUri }} style={styles.listThumb} />
+                    ) : (
+                      <View style={styles.calloutIconBox}>
+                        <MaterialCommunityIcons
+                          name={HAZARD_VECTOR_ICONS[h.type] || 'alert-circle'}
+                          size={22}
+                          color={AppColors.primary}
+                        />
+                      </View>
+                    )}
+                    <View style={{ flex: 1, gap: 2 }}>
+                      <Text style={styles.calloutTitle}>{HAZARD_LABELS[h.type]}</Text>
+                      <Text style={styles.calloutSub}>
+                        {h.source === 'both'
+                          ? 'Vision AI + Phone IMU'
+                          : h.source === 'camera'
+                          ? 'Vision AI Photo'
+                          : 'Phone Accelerometer'}
+                        {' · '}{h.deviceCount} device{h.deviceCount !== 1 ? 's' : ''}
+                      </Text>
+                      {h.magnitude && (
+                        <Text style={styles.shockListText}>
+                          ⚡ {h.magnitude}G shock {h.speedKmh ? `@ ${Math.round(h.speedKmh)} km/h` : ''}
+                        </Text>
+                      )}
+                    </View>
+                    <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <Text style={[styles.confidenceNum, { color: confidenceColor }]}>
+                          {confidencePct}%
+                        </Text>
+                        <Text style={styles.confidenceLabel}>CONFIDENCE</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.deleteCardBtn}
+                        onPress={async (e) => {
+                          e.stopPropagation?.();
+                          await storage.deleteHazard(h.id);
+                          await loadHazardsAndRoutes();
+                        }}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                      </TouchableOpacity>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })
+            )}
           </ScrollView>
         )}
 
@@ -1569,4 +1632,62 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderColor: AppColors.border,
   },
+  defectsActionBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    marginBottom: 4,
+  },
+  defectsCountLabel: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: AppColors.textSecondary,
+    letterSpacing: 0.5,
+  },
+  clearAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  clearAllBtnText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#EF4444',
+  },
+  deleteCardBtn: {
+    padding: 5,
+    borderRadius: 6,
+    backgroundColor: '#FEF2F2',
+  },
+  emptyDefectsBox: {
+    padding: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    backgroundColor: AppColors.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+    marginTop: 20,
+  },
+  emptyDefectsTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: AppColors.textPrimary,
+  },
+  emptyDefectsSub: {
+    fontSize: 12,
+    color: AppColors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
 });
+

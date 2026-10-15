@@ -202,6 +202,19 @@ export default function HazardDetailScreen() {
           onPress={() => router.push('/(tabs)/report')}
           style={{ marginTop: 8 }}
         />
+
+        <Button
+          title="Delete & Remove from Map"
+          variant="destructive"
+          size="lg"
+          fullWidth
+          icon="trash-outline"
+          onPress={async () => {
+            await storage.deleteHazard(hazard.id);
+            router.back();
+          }}
+          style={{ marginTop: 10 }}
+        />
       </ScrollView>
     </SafeAreaView>
   );

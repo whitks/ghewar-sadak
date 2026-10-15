@@ -347,3 +347,88 @@ export function generateRoadMemorySegments(
 
   return segments;
 }
+
+/**
+ * Generates a minimal, clean, sparse set of defect points situated directly
+ * along the surveyed road corridor lines rather than a cluttered cloud of pins.
+ */
+export function generateSparseRoadLineHazards(
+  centerCoords: { latitude: number; longitude: number },
+  deletedIds: Set<string> = new Set()
+): Hazard[] {
+  const { latitude: lat, longitude: lon } = centerCoords;
+  const dLat = (meters: number) => meters / 111320;
+  const dLon = (meters: number) => meters / (111320 * Math.cos((lat * Math.PI) / 180));
+
+  const candidateHazards: Hazard[] = [
+    {
+      id: 'haz-line-01',
+      lat: lat + dLat(-100),
+      lon: lon + dLon(-8),
+      type: 'pothole',
+      status: 'confirmed',
+      confidence: 0.91,
+      severity: 85,
+      source: 'both',
+      cameraScore: 0.88,
+      phoneScore: 0.84,
+      deviceCount: 4,
+      lastSeen: new Date(Date.now() - 3600000).toISOString(),
+      description: 'Severe pothole on North-South Arterial Highway; high vibration impact verified.',
+      magnitude: 1.85,
+      speedKmh: 42,
+    },
+    {
+      id: 'haz-line-02',
+      lat: lat + dLat(80),
+      lon: lon + dLon(5),
+      type: 'alligator_crack',
+      status: 'probable',
+      confidence: 0.74,
+      severity: 55,
+      source: 'camera',
+      cameraScore: 0.78,
+      deviceCount: 2,
+      lastSeen: new Date(Date.now() - 7200000).toISOString(),
+      description: 'Fatigue cracking along arterial corridor shoulder.',
+      magnitude: 1.25,
+      speedKmh: 48,
+    },
+    {
+      id: 'haz-line-03',
+      lat: lat + dLat(0),
+      lon: lon + dLon(0),
+      type: 'rough_patch',
+      status: 'confirmed',
+      confidence: 0.82,
+      severity: 68,
+      source: 'phone',
+      phoneScore: 0.85,
+      deviceCount: 5,
+      lastSeen: new Date(Date.now() - 1800000).toISOString(),
+      description: 'East Sector Link Road intersection: sustained vertical vibration.',
+      magnitude: 1.62,
+      speedKmh: 35,
+    },
+    {
+      id: 'haz-line-04',
+      lat: lat + dLat(100),
+      lon: lon + dLon(230),
+      type: 'transverse_crack',
+      status: 'probable',
+      confidence: 0.65,
+      severity: 45,
+      source: 'both',
+      cameraScore: 0.70,
+      phoneScore: 0.60,
+      deviceCount: 2,
+      lastSeen: new Date(Date.now() - 10800000).toISOString(),
+      description: 'Transverse thermal crack across Outer Bypass crescent lane.',
+      magnitude: 1.18,
+      speedKmh: 55,
+    },
+  ];
+
+  return candidateHazards.filter((h) => !deletedIds.has(h.id));
+}
+

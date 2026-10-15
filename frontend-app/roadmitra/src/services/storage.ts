@@ -44,6 +44,7 @@ const KEYS = {
   UPLOAD_QUEUE: 'upload_queue',
   SETTINGS: 'settings',
   HAZARDS: 'hazards',
+  DELETED_HAZARDS: 'deleted_hazard_ids',
   LAST_LOCATION: 'last_location',
 };
 
@@ -143,10 +144,42 @@ export const storage = {
     await storage.saveTrips(updated);
   },
 
+  async getDeletedHazardIds(): Promise<string[]> {
+    const v = await safeGetItem(KEYS.DELETED_HAZARDS);
+    if (!v) return [];
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  },
+
   async deleteHazard(hazardId: string): Promise<void> {
     const hazards = await storage.getHazards();
     const updated = hazards.filter((h) => h?.id !== hazardId);
     await storage.saveHazards(updated);
+
+    // Record in deleted IDs set so it never gets resurrected by mock lists
+    const deleted = await storage.getDeletedHazardIds();
+    if (!deleted.includes(hazardId)) {
+      deleted.push(hazardId);
+      await safeSetItem(KEYS.DELETED_HAZARDS, JSON.stringify(deleted));
+    }
+  },
+
+  async clearAllHazards(): Promise<void> {
+    const hazards = await storage.getHazards();
+    const deleted = await storage.getDeletedHazardIds();
+    for (const h of hazards) {
+      if (h?.id && !deleted.includes(h.id)) deleted.push(h.id);
+    }
+    // Also mark all mock hazards as deleted
+    for (const m of ['haz-001', 'haz-002', 'haz-003', 'haz-004', 'haz-005', 'haz-006']) {
+      if (!deleted.includes(m)) deleted.push(m);
+    }
+    await safeSetItem(KEYS.DELETED_HAZARDS, JSON.stringify(deleted));
+    await storage.saveHazards([]);
   },
 
   async getUploadQueue(): Promise<UploadQueueItem[]> {

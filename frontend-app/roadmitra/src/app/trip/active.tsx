@@ -34,6 +34,7 @@ import {
 } from '../../services/sensorFusionService';
 import { UnifiedFusionResultCard } from '../../components/UnifiedFusionResultCard';
 import { BBoxOverlay } from '../../components/BBoxOverlay';
+import { ModelVideoFeed } from '../../components/ModelVideoFeed';
 
 export default function ActiveTripScreen() {
   const {
@@ -73,6 +74,7 @@ export default function ActiveTripScreen() {
   const [latestFusedEvent, setLatestFusedEvent] = useState<FusedEvent | null>(
     sensorFusionService.getLatestFusedEvent(),
   );
+  const [feedMode, setFeedMode] = useState<'model_video' | 'camera'>('model_video');
 
   const cameraRef = useRef<any>(null);
   const pulseAnim = useRef(new Animated.Value(1)).current;
@@ -344,8 +346,23 @@ export default function ActiveTripScreen() {
           </View>
         </View>
 
-        {/* Live Camera Viewfinder (clean video feed — no bounding boxes over video) */}
-        <View style={styles.viewfinderContainer}>
+        {/* Continuous Model Output Video Feed (Looping) with Real-Time Vibration Telemetry */}
+        <ModelVideoFeed
+          vibrationRms={vibrationRms}
+          dynamicGForce={dynamicGForce}
+          verticalGForce={verticalGForce}
+          roadQuality={roadQuality as any}
+          speed={speed}
+          feedMode={feedMode}
+          onToggleFeedMode={() => {
+            if (feedMode === 'model_video') {
+              if (!permission?.granted) requestPermission();
+              setFeedMode('camera');
+            } else {
+              setFeedMode('model_video');
+            }
+          }}
+        >
           {permission?.granted ? (
             <>
               <CameraView
@@ -353,18 +370,15 @@ export default function ActiveTripScreen() {
                 facing="back"
                 style={styles.cameraView}
               />
-
-              {/* Viewfinder HUD Overlays */}
               <View style={styles.hudOverlay} pointerEvents="box-none">
                 <View style={styles.hudPill}>
                   <View style={styles.hudDotLive} />
-                  <Text style={styles.hudPillText}>WINDSHIELD CAM</Text>
+                  <Text style={styles.hudPillText}>LIVE WINDSHIELD CAM</Text>
                 </View>
                 <View style={styles.hudPill}>
                   <Text style={styles.hudPillText}>{vibrationRms.toFixed(2)}G RMS</Text>
                 </View>
               </View>
-
               {streamState.isProcessingFrame && (
                 <View style={styles.aiBadge}>
                   <ActivityIndicator size="small" color="#fff" />
@@ -377,16 +391,16 @@ export default function ActiveTripScreen() {
               <Ionicons name="camera-outline" size={38} color={AppColors.primary} />
               <Text style={styles.permTitle}>Windshield Camera Inactive</Text>
               <Text style={styles.permSub}>
-                Enable camera to stream road frames to backend AI model.
+                Enable camera to stream real road footage to YOLO backend.
               </Text>
               <Button
-                title="Enable Camera Scan"
+                title="Enable Live Camera"
                 size="sm"
                 onPress={requestPermission}
               />
             </View>
           )}
-        </View>
+        </ModelVideoFeed>
 
         {/* Single Unified Multi-Modal Result Card (Camera + Vibration Together) */}
         <UnifiedFusionResultCard
