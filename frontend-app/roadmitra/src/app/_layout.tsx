@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Stack, router } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { storage } from '@/services/storage';
+import { BACKEND_URL } from '@/services/api';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -9,6 +10,10 @@ export default function RootLayout() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    // Warm up Render backend from cold-sleep in the background
+    console.log('[RoadMitra] Connecting to Render backend:', BACKEND_URL);
+    fetch(BACKEND_URL).catch(() => {});
+
     async function init() {
       try {
         const done = await storage.isOnboardingDone();

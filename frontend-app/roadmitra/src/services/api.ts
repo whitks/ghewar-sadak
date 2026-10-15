@@ -85,7 +85,8 @@ function buildUrl(baseUrl: string, path: string): string {
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 10000);
+  // 40s timeout to gracefully accommodate Render free-tier cold starts
+  const timeout = setTimeout(() => controller.abort(), 40000);
   try {
     const isFormData = typeof FormData !== 'undefined' && options?.body instanceof FormData;
     const reqHeaders: Record<string, string> = {
@@ -98,6 +99,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
     }
 
     const url = buildUrl(activeBackendUrl, path);
+    console.log('[RoadMitra API] Connecting to Render URL:', url);
     const res = await fetch(url, {
       ...options,
       headers: reqHeaders,
@@ -122,6 +124,7 @@ export async function uploadDashcamFrame(
   conf: number = 0.15
 ): Promise<UploadFrameResponse> {
   const uploadUrl = buildUrl(activeBackendUrl, '/api/upload-frame');
+  console.log(`[Dashcam] Uploading frame to Render backend: ${uploadUrl} (model=${model}, conf=${conf})`);
 
   try {
     let localFileUri = imageUri;
@@ -228,7 +231,7 @@ export async function uploadDashcamFrame(
       throw new Error(`Upload failed (HTTP ${response.status})`);
     }
   } catch (err: any) {
-    console.warn('[Dashcam API] Backend upload error:', err?.message || err);
+    console.warn(`[Dashcam API] Remote upload to ${uploadUrl} failed:`, err?.message || err);
     return {
       status: 'error',
       frame_id: '',
@@ -253,10 +256,18 @@ export async function annotateFrame(
   runDepth: boolean = false
 ): Promise<AnnotateFrameResponse> {
   const url = buildUrl(BACKEND_URL, `/api/annotate-frame?format=json&model=${model}&conf=${conf}&run_depth=${runDepth}`);
+  console.log(`[AnnotateFrame] Connecting to Render backend: ${url}`);
 
   try {
     if (Platform.OS !== 'web') {
-      const uploadResult = await FileSystem.uploadAsync(url, imageUri, {
+      let localUri = imageUri;
+      if (imageUri.startsWith('http://') || imageUri.startsWith('https://')) {
+        const cacheFile = `${FileSystem.cacheDirectory || ''}annotate_frame_${Date.now()}.jpg`;
+        const downloadResult = await FileSystem.downloadAsync(imageUri, cacheFile);
+        localUri = downloadResult.uri;
+      }
+
+      const uploadResult = await FileSystem.uploadAsync(url, localUri, {
         fieldName: 'file',
         httpMethod: 'POST',
         uploadType: FileSystem.FileSystemUploadType.MULTIPART,
@@ -294,7 +305,7 @@ export async function annotateFrame(
       throw new Error(`Annotate failed (${res.status})`);
     }
   } catch (err: any) {
-    console.warn('[AnnotateFrame] Remote call failed, using local fallback:', err?.message || err);
+    console.warn(`[AnnotateFrame] Remote call to ${url} failed, using local fallback:`, err?.message || err);
     return {
       status: 'success',
       model_used: model,
