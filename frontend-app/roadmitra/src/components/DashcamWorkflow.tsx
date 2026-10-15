@@ -37,7 +37,7 @@ const STEPS: StepDef[] = [
     key: 'detecting',
     index: 3,
     label: 'AI Inference',
-    sublabel: 'YOLO26s + Depth',
+    sublabel: 'YOLO + Depth',
     icon: 'hardware-chip',
   },
   {

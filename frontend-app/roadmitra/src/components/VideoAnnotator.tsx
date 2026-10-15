@@ -80,7 +80,7 @@ export function VideoAnnotator() {
           }
           return p + 15;
         });
-        setProgressMsg('Running YOLO26s AI on all video frames with depth estimation...');
+        setProgressMsg('Running AI on all video frames with depth estimation...');
       }, 500);
 
       let data: VideoProcessingResult | null = null;
@@ -179,7 +179,7 @@ export function VideoAnnotator() {
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Full Video AI Annotator</Text>
           <Text style={styles.subtitle}>
-            Process all frames with YOLO26s bounding boxes & depth metrics
+            Process all frames with YOLO bounding boxes & depth metrics
           </Text>
         </View>
       </View>

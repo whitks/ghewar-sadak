@@ -330,7 +330,7 @@ export async function uploadDashcamFrame(
  */
 export async function annotateFrame(
   imageUri: string,
-  model: 'fast' | 'accurate' | 'yolo26' = 'fast',
+  model: 'fast' | 'accurate' = 'fast',
   conf: number = 0.15,
   runDepth: boolean = false
 ): Promise<AnnotateFrameResponse> {
