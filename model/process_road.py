@@ -70,7 +70,6 @@ def parse_args():
     parser.add_argument("--calibration", type=str, default=None, help="Path to calibration.json if fitted")
     parser.add_argument("--lat", type=float, default=None, help="GPS Latitude")
     parser.add_argument("--lon", type=float, default=None, help="GPS Longitude")
-    parser.add_argument("--potholes-only", action="store_true", help="Only process class 'Pothole'")
     return parser.parse_args()
 
 
@@ -107,7 +106,7 @@ def main():
     # 1. Load YOLO model & run detection
     print(f"⏳ Loading YOLOv8 from {MODEL_PATH}...")
     model = YOLO(str(MODEL_PATH))
-    target_classes = [3] if args.potholes_only else None
+    target_classes = None
     results = model.predict(source=str(img_path), conf=args.conf, classes=target_classes, verbose=False)
     boxes = results[0].boxes
 

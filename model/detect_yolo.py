@@ -22,10 +22,9 @@ OUT_DIR.mkdir(exist_ok=True)
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="YOLOv8 Pothole Detection")
+    parser = argparse.ArgumentParser(description="YOLOv8 Pothole & Road Distress Detection")
     parser.add_argument("image", nargs="?", default="images.jpg", help="Path to input image")
     parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshold (default: 0.25)")
-    parser.add_argument("--potholes-only", action="store_true", help="Only detect and highlight potholes")
     return parser.parse_args()
 
 
@@ -44,14 +43,11 @@ def main():
     print(f"Loading YOLOv8 model from {MODEL_PATH}...")
     model = YOLO(str(MODEL_PATH))
 
-    # In this model:
+    # In this model, all classes are detected (never potholes-only):
     # 0: Longitudinal Crack, 1: Transverse Crack, 2: Alligator Crack, 3: Pothole, 4: Other (patches/distress)
-    if args.potholes_only:
-        target_classes = [3]
-    else:
-        target_classes = None
+    target_classes = None
 
-    print(f"Running inference on {img_path} (confidence={args.conf}, potholes_only={args.potholes_only})...")
+    print(f"Running inference on {img_path} (confidence={args.conf}, all defects tracked)...")
     results = model.predict(
         source=str(img_path),
         conf=args.conf,

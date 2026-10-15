@@ -61,10 +61,11 @@ if hasattr(block, 'AAttn') and hasattr(block.AAttn, 'forward'):
 # Dynamic path resolution to work from root or model/
 BASE_DIR = Path(__file__).resolve().parent
 
-# Model candidates: prioritize fast or accurate models
+# Model candidates: prioritize comprehensive multi-class model (cracks + potholes)
 candidates = [
-    BASE_DIR / "model" / "fast" / "best.pt",
     BASE_DIR / "model" / "final-classification" / "best.pt",
+    BASE_DIR / "final-classification" / "best.pt",
+    BASE_DIR / "model" / "fast" / "best.pt",
     BASE_DIR / "pothole-cv-experiment" / "best.pt",
 ]
 DEFAULT_MODEL_PATH = next((p for p in candidates if p.exists()), None)
@@ -199,18 +200,21 @@ def main():
             conf = float(b.conf[0])
             x1, y1, x2, y2 = [int(round(v)) for v in b.xyxy[0].tolist()]
             bw, bh = x2 - x1, y2 - y1
-            raw_name = str(model.names[cls_id])
-            if "D00" in raw_name or "pothole" in raw_name.lower():
+            raw_name = str(model.names.get(cls_id, cls_id))
+            if "pothole" in raw_name.lower() or str(cls_id) == "3" or "D40" in raw_name:
                 cls_name = "Pothole"
                 frame_potholes += 1
-            elif "D10" in raw_name:
+            elif "longitudinal" in raw_name.lower() or str(cls_id) == "0" or "D00" in raw_name:
                 cls_name = "Longitudinal Crack"
                 frame_distress += 1
-            elif "D20" in raw_name:
+            elif "transverse" in raw_name.lower() or str(cls_id) == "1" or "D10" in raw_name:
                 cls_name = "Transverse Crack"
                 frame_distress += 1
-            elif "D40" in raw_name or "alligator" in raw_name.lower():
+            elif "alligator" in raw_name.lower() or str(cls_id) == "2" or "D20" in raw_name:
                 cls_name = "Alligator Crack"
+                frame_distress += 1
+            elif "other" in raw_name.lower() or str(cls_id) == "4":
+                cls_name = "Road Distress (Other)"
                 frame_distress += 1
             else:
                 cls_name = raw_name

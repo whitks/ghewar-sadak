@@ -90,7 +90,7 @@ CLASS_DISPLAY_NAMES = {
 class PotholeDetectorEngine:
     """Manages multi-model loading, real-time object detection, and 3D depth computation."""
 
-    def __init__(self, default_model: str = "fast"):
+    def __init__(self, default_model: str = "accurate"):
         # Model path registry
         fast_path = ROOT_DIR / "model" / "fast" / "best.pt"
         if not fast_path.exists():
@@ -125,15 +125,15 @@ class PotholeDetectorEngine:
         self.model_path = self.model_registry[self.default_key]["path"]
 
     def resolve_model_key(self, model_name: Optional[str]) -> str:
-        """Normalize user input to a canonical model key: 'fast' or 'accurate'."""
+        """Normalize user input to a canonical model key: 'fast' or 'accurate'. Defaults to 'accurate'."""
         if not model_name:
-            return "fast"
-        s = str(model_name).lower().strip()
-        if any(k in s for k in ["acc", "slow", "multi", "class", "final", "deep"]):
             return "accurate"
-        return "fast"
+        s = str(model_name).lower().strip()
+        if any(k in s for k in ["fast", "quick", "speed", "light", "pothole_only"]):
+            return "fast"
+        return "accurate"
 
-    def get_available_key(self, preferred_key: str = "fast") -> str:
+    def get_available_key(self, preferred_key: str = "accurate") -> str:
         """Return preferred_key if weights exist on disk, otherwise the first existing model in registry."""
         key = self.resolve_model_key(preferred_key)
         reg = self.model_registry.get(key)

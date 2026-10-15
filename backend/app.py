@@ -45,9 +45,9 @@ VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 # Initialize database schema
 init_db(DB_PATH)
 
-# Initialize AI Detection & Depth Engine (preloads fast model for real-time inference)
+# Initialize AI Detection & Depth Engine (preloads accurate multi-class model for full road distress detection)
 print("⏳ Initializing RoadMitra Multi-Model AI Engine...")
-detector = PotholeDetectorEngine(default_model="fast")
+detector = PotholeDetectorEngine(default_model="accurate")
 
 app = Flask(__name__)
 CORS(app)  # Enable Cross-Origin requests for React Native / Expo / Web
@@ -163,8 +163,8 @@ def annotate_frame():
             "message": "No image provided. Upload a file ('file' or 'image'), send raw JPEG bytes in body, or JSON {'image': 'base64...'}"
         }), 400
 
-    # Parse parameters with default conf = 0.15 (as requested)
-    model_name = request.args.get("model") or request.form.get("model") or "fast"
+    # Parse parameters with default conf = 0.15 (detects all defects: cracks + potholes)
+    model_name = request.args.get("model") or request.form.get("model") or "accurate"
     try:
         conf = float(request.args.get("conf") or request.form.get("conf") or 0.15)
     except (ValueError, TypeError):
@@ -246,7 +246,7 @@ def detect_clip():
     - run_depth: Whether to compute 3D depth (default: False for high FPS)
     """
     use_sample = request.form.get("use_sample", "false").lower() in ("true", "1", "yes")
-    model_name = request.form.get("model") or request.args.get("model") or "fast"
+    model_name = request.form.get("model") or request.args.get("model") or "accurate"
     model_key = detector.resolve_model_key(model_name)
     try:
         conf = float(request.form.get("conf") or request.args.get("conf") or 0.15)
@@ -366,7 +366,7 @@ def process_video():
     Outputs the final annotated MP4 video.
     """
     use_sample = request.form.get("use_sample", "false").lower() in ("true", "1", "yes")
-    model_name = request.form.get("model") or request.args.get("model") or "fast"
+    model_name = request.form.get("model") or request.args.get("model") or "accurate"
     model_key = detector.resolve_model_key(model_name)
     try:
         conf = float(request.form.get("conf") or 0.15)
@@ -513,7 +513,7 @@ def upload_frame():
     speed_kmh = float(request.form.get("speed_kmh", 0.0))
     device_id = request.form.get("device_id", "dashcam_default")
     timestamp = request.form.get("timestamp") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    model_name = request.form.get("model", "fast")
+    model_name = request.form.get("model", "accurate")
     conf = float(request.form.get("conf", 0.15))
     run_depth = request.form.get("run_depth", "false").lower() in ("true", "1", "yes")
 

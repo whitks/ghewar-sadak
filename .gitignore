@@ -26,6 +26,11 @@ yolo26-experiment/
 # Agents / IDE
 .agents/
 
+# Local test videos
+*.webm
+1.mp4
+test_*.mp4
+
 # OS
 .DS_Store
 Thumbs.db
