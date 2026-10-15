@@ -160,7 +160,21 @@ export async function uploadDashcamFrame(
   conf: number = 0.15
 ): Promise<UploadFrameResponse> {
   const uploadUrl = buildUrl(activeBackendUrl, '/api/upload-frame');
-  console.log(`[Dashcam] Uploading frame to Render backend: ${uploadUrl} (model=${model}, conf=${conf})`);
+
+  // Honour exponential backoff: if the backend is in a cooldown window after
+  // repeated 5xx / network failures, skip this upload silently.
+  if (_shouldSkipUpload()) {
+    return {
+      status: 'error',
+      frame_id: '',
+      timestamp: new Date().toISOString(),
+      potholes_found: 0,
+      detections: [],
+      annotated_image_url: '',
+      raw_image_url: imageUri,
+      error: 'Backend offline — upload skipped (backoff active)',
+    };
+  }
 
   try {
     let localFileUri = imageUri;
@@ -226,7 +240,12 @@ export async function uploadDashcamFrame(
         });
 
         if (uploadResult.status >= 200 && uploadResult.status < 300) {
+          _backoffReset();
           return JSON.parse(uploadResult.body);
+        }
+        // 5xx from Render → trigger backoff, not a per-call WARN
+        if (uploadResult.status >= 500) {
+          _backoffOnError(`HTTP ${uploadResult.status}`);
         }
         throw new Error(`Upload failed (HTTP ${uploadResult.status})`);
       } finally {
@@ -262,12 +281,21 @@ export async function uploadDashcamFrame(
       });
 
       if (response.ok) {
+        _backoffReset();
         return await response.json();
+      }
+      // 5xx → backoff; 4xx → let it surface normally
+      if (response.status >= 500) {
+        _backoffOnError(`HTTP ${response.status}`);
       }
       throw new Error(`Upload failed (HTTP ${response.status})`);
     }
   } catch (err: any) {
-    console.warn(`[Dashcam API] Remote upload to ${uploadUrl} failed:`, err?.message || err);
+    // Only log the first failure per backoff window (backoff handles silencing repeats)
+    if (!_backoffLogged) {
+      console.warn(`[Dashcam API] Backend upload error:`, err?.message || err);
+    }
+    _backoffOnError(err?.message || 'network error');
     return {
       status: 'error',
       frame_id: '',
