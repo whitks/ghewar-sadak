@@ -83,6 +83,37 @@ from map_generator import generate_map_html
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def transcode_to_h264(video_path: Path) -> Path:
+    """Ensure output MP4 is encoded in standard H.264 (avc1) for universal playback on Windows & web."""
+    try:
+        import subprocess
+        import shutil
+        ffmpeg_exe = shutil.which("ffmpeg")
+        if not ffmpeg_exe:
+            try:
+                import imageio_ffmpeg
+                ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+            except ImportError:
+                pass
+
+        if ffmpeg_exe and video_path.exists():
+            temp_path = video_path.with_name(f"temp_h264_{video_path.name}")
+            cmd = [
+                ffmpeg_exe, "-y", "-i", str(video_path),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-preset", "veryfast", "-crf", "23",
+                "-movflags", "+faststart",
+                str(temp_path)
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if res.returncode == 0 and temp_path.exists() and temp_path.stat().st_size > 1000:
+                shutil.move(str(temp_path), str(video_path))
+                print(f"🎬 Transcoded to standard H.264 (Universally Playable): '{video_path}'")
+    except Exception as e:
+        print(f"⚠️ H.264 transcode notice: {e}")
+    return video_path
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Video Pothole & Distress Processing Pipeline")
     parser.add_argument("video", nargs="?", default="sample_video.mp4", help="Path to input video file")
@@ -297,6 +328,9 @@ def main():
     cap.release()
     writer.release()
     elapsed = time.time() - start_time
+
+    # Auto-transcode to standard H.264 (avc1) for universal playback on Windows & browsers
+    transcode_to_h264(out_video_path)
 
     # Save best snapshot and depth map
     if best_frame_snapshot is not None:

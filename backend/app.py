@@ -42,6 +42,38 @@ FRAMES_DIR.mkdir(parents=True, exist_ok=True)
 ANNOTATED_DIR.mkdir(parents=True, exist_ok=True)
 VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def transcode_to_h264(video_path: Path) -> Path:
+    """Ensure output MP4 is encoded in standard H.264 (avc1) for universal playback on Windows & web."""
+    try:
+        import subprocess
+        import shutil
+        ffmpeg_exe = shutil.which("ffmpeg")
+        if not ffmpeg_exe:
+            try:
+                import imageio_ffmpeg
+                ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+            except ImportError:
+                pass
+
+        if ffmpeg_exe and video_path.exists():
+            temp_path = video_path.with_name(f"temp_h264_{video_path.name}")
+            cmd = [
+                ffmpeg_exe, "-y", "-i", str(video_path),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                "-preset", "veryfast", "-crf", "23",
+                "-movflags", "+faststart",
+                str(temp_path)
+            ]
+            res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if res.returncode == 0 and temp_path.exists() and temp_path.stat().st_size > 1000:
+                shutil.move(str(temp_path), str(video_path))
+                print(f"🎬 Transcoded to standard H.264 (Universally Playable): '{video_path}'")
+    except Exception as e:
+        print(f"⚠️ H.264 transcode notice: {e}")
+    return video_path
+
+
 # Initialize database schema
 init_db(DB_PATH)
 
@@ -324,6 +356,7 @@ def detect_clip():
 
     cap.release()
     out_writer.release()
+    transcode_to_h264(out_filepath)
     total_time = round(time.time() - t_start, 2)
 
     # Save peak snapshot
@@ -461,6 +494,7 @@ def process_video():
 
     cap.release()
     out_writer.release()
+    transcode_to_h264(out_filepath)
 
     snapshot_filename = f"snapshot_{vid_timestamp_id}.jpg"
     snapshot_filepath = ANNOTATED_DIR / snapshot_filename
